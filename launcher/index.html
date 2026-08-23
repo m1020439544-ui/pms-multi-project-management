@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>智项目 · 多项目管理系统 启动界面</title>
+  <style>
+    :root{--bg:#F7F8FA;--card:#fff;--border:#E3E5EA;--primary:#4E5BF0;--green:#30A46C;--red:#E5484D;--text:#1A1D23;--muted:#5A5F6A}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:"PingFang SC","Microsoft YaHei",sans-serif;background:radial-gradient(900px 500px at 80% -10%,rgba(78,91,240,.16),transparent 60%),var(--bg);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--text)}
+    .card{width:min(760px,100%);background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 10px 40px rgba(16,24,40,.08);padding:28px}
+    h1{margin:0 0 4px;font-size:22px}
+    .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+    .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:600}
+    .badge.on{background:#E6F4ED;color:var(--green)}
+    .badge.off{background:#FDEBEB;color:var(--red)}
+    .badge .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}
+    @media(max-width:560px){.grid{grid-template-columns:1fr 1fr}}
+    button{display:flex;flex-direction:column;align-items:center;gap:8px;padding:18px 12px;border:1px solid var(--border);border-radius:10px;background:#fff;cursor:pointer;font-family:inherit;font-size:14px;font-weight:600;color:var(--text)}
+    button:hover{border-color:var(--primary);background:#F5F6FF}
+    button .ico{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:#EEF0FE;color:var(--primary)}
+    button.danger .ico{background:#FDEBEB;color:var(--red)}
+    button.green .ico{background:#E6F4ED;color:var(--green)}
+    .info{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;font-size:12px;color:var(--muted)}
+    .info b{color:var(--text)}
+    .log{background:#14171F;color:#D7DAE0;border-radius:10px;padding:14px;height:180px;overflow:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap;margin-top:14px}
+    .row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .btn-sm{border:1px solid var(--border);border-radius:8px;background:#fff;padding:8px 14px;cursor:pointer;font-size:13px}
+    .toast{position:fixed;right:24px;bottom:24px;background:var(--text);color:#fff;padding:12px 18px;border-radius:8px;opacity:0;transition:.2s;z-index:9}
+    .toast.show{opacity:1}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="row">
+      <div>
+        <h1>智项目 · 多项目管理系统</h1>
+        <div class="sub">V1.0.1 启动管理界面 · 一键安装 / 启动 / 停止 / 打开 / 查看日志</div>
+      </div>
+      <span id="statusBadge" class="badge off"><span class="dot"></span><span id="statusText">检测中…</span></span>
+    </div>
+    <div class="info" id="infoBar"></div>
+    <div class="grid">
+      <button onclick="act('/api/install','POST')"><span class="ico">⬇</span>安装依赖</button>
+      <button class="green" onclick="act('/api/start','POST')"><span class="ico">▶</span>启动系统(后台)</button>
+      <button class="danger" onclick="act('/api/stop','POST')"><span class="ico">■</span>停止系统</button>
+      <button onclick="openSystem()"><span class="ico">🌐</span>打开系统</button>
+      <button onclick="refreshLog()"><span class="ico">📄</span>刷新日志</button>
+      <button onclick="refreshStatus()"><span class="ico">🔄</span>刷新状态</button>
+    </div>
+    <div class="row"><b>运行日志（data/pms.log）</b><button class="btn-sm" onclick="refreshLog()">刷新</button></div>
+    <div class="log" id="log">加载中…</div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script>
+    let pmsPort = 3000;
+    const $ = (id) => document.getElementById(id);
+    function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);}
+    async function act(url, method){
+      try{
+        const res = await fetch(url, { method });
+        const data = await res.json();
+        toast(data.message || '操作完成');
+        if (data.output) $('log').textContent = data.output;
+        refreshStatus(); refreshLog();
+      }catch(e){ toast('操作失败：' + e.message); }
+    }
+    async function refreshStatus(){
+      try{
+        const d = await (await fetch('/api/status')).json();
+        pmsPort = d.pmsPort;
+        $('statusText').textContent = d.running ? '系统运行中' : '系统未运行';
+        $('statusBadge').className = 'badge ' + (d.running ? 'on' : 'off');
+        $('infoBar').innerHTML =
+          '<span>系统端口：<b>' + d.pmsPort + '</b></span>' +
+          '<span>启动界面端口：<b>' + d.launcherPort + '</b></span>' +
+          '<span>PID：<b>' + (d.pid || '—') + '</b></span>' +
+          '<span>版本：<b>' + d.version + '</b></span>' +
+          '<span>运行环境：<b>' + d.platform + '</b> Node ' + d.nodeVersion + '</span>';
+      }catch(e){}
+    }
+    async function refreshLog(){
+      try{
+        const d = await (await fetch('/api/log')).json();
+        $('log').textContent = d.log || '暂无日志';
+      }catch(e){}
+    }
+    function openSystem(){ window.open('http://localhost:' + pmsPort, '_blank'); }
+    refreshStatus(); refreshLog();
+    setInterval(refreshStatus, 5000);
+  </script>
+</body>
+</html>

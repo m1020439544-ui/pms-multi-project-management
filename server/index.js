@@ -54,6 +54,6 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`智项目 · 多项目管理系统已启动：http://localhost:${PORT}`);
+  console.log(`智项目 · 多项目管理系统 V1.0.1 已启动：http://localhost:${PORT}`);
   console.log(`演示账号：pmo / pmo2026（管理员），viewer / pmo2026（只读）`);
 });

@@ -1,6 +1,6 @@
 {
   "name": "pms",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "智项目 · 多项目管理系统",
   "main": "server/index.js",

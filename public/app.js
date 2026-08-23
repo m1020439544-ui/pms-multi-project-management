@@ -1502,7 +1502,8 @@
           <td class="num amount">${num(c.amount)}</td><td>${esc(c.sign_date||'')}</td><td>${esc(c.project_name||'')}</td>
           ${canWrite('contract') ? `<td class="actions">${c.direction==='backward'
             ? `${iconBtn('edit-back-contract:' + c.rawId, 'edit', '编辑')}${iconBtn('delete-back-contract:' + c.rawId, 'trash', '删除', 'danger')}`
-            : iconBtn('edit-front-contract:' + c.project_id, 'edit', '编辑前向合同')}</td>` : ''}
+            : iconBtn('edit-front-contract:' + c.project_id, 'edit', '编辑前向合同')}
+            ${iconBtn('contract-files:' + c.direction + ':' + (c.direction==='forward' ? c.project_id : c.rawId), 'folder', '合同附件')}</td>` : `<td class="actions">${iconBtn('contract-files:' + c.direction + ':' + (c.direction==='forward' ? c.project_id : c.rawId), 'folder', '合同附件')}</td>`}
         </tr>`).join('')}</tbody>
     </table></div>`;
   }
@@ -1600,6 +1601,126 @@
       toast('前向合同已更新');
       closeModal();
       await renderContracts();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleContractFiles(key) {
+    const [direction, id] = key.split(':');
+    openModal('合同附件与操作记录', `
+      <div class="space-between mb16">
+        <div class="small muted">支持上传合同扫描件、合同清单、报价单、签收单等附件；PDF/图片可在线查看。</div>
+        <div class="row">
+          ${canWrite('contract') ? `<button class="btn primary sm" data-action="analyze-contract">AI 分析合同条款</button>` : ''}
+          ${canWrite('contract') ? `<label class="btn sm" style="cursor:pointer">${svg('plus')} 上传附件<input type="file" id="contract-file-input" style="display:none"></label>` : ''}
+        </div>
+      </div>
+      <div id="contract-analysis"></div>
+      <div id="contract-files-list"></div>
+      <div class="divider"></div>
+      <h3 style="margin:0 0 8px;font-size:14px">操作记录</h3>
+      <div id="contract-files-log"></div>`,
+      modalButtons([{ label: '关闭', action: 'modal-close' }]));
+    window._contractFilesKey = { direction, id };
+    await loadContractFilesModal(direction, id);
+  }
+
+  async function loadContractFilesModal(direction, id) {
+    const [files, logs, analysis] = await Promise.all([
+      api(`/api/contracts/${direction}/${id}/files`),
+      api(`/api/contracts/${direction}/${id}/logs`),
+      api(`/api/contracts/${direction}/${id}/analysis`).catch(() => null)
+    ]);
+    const listEl = document.getElementById('contract-files-list');
+    const logEl = document.getElementById('contract-files-log');
+    const anaEl = document.getElementById('contract-analysis');
+    if (anaEl) {
+      if (analysis) {
+        const riskColor = { red: 'var(--risk-red)', yellow: 'var(--risk-yellow)', green: 'var(--risk-green)' }[analysis.risk_level] || 'var(--text-secondary)';
+        anaEl.innerHTML = `<div class="card card-pad mb16" style="border-color:var(--primary-subtle)">
+          <div class="space-between"><b>${svg('doc')} ${esc(analysis.title || '合同重要条款分析')}</b><span class="tag" style="background:${riskColor}1a;color:${riskColor}">${analysis.risk_level === 'red' ? '高风险' : analysis.risk_level === 'yellow' ? '关注' : '正常'}</span></div>
+          <p class="small muted mt8">${esc(analysis.summary || '')}</p>
+          ${(analysis.clauses || []).map(c=>`<div style="padding:8px 0;border-bottom:1px solid var(--border)"><span class="tag primary">${esc(c.category||'条款')}</span>
+            <div class="mt8"><b>${esc(c.name||'')}</b></div><div class="small">${esc(c.content||'')}</div></div>`).join('')}
+          <div class="small muted mt8">分析时间：${esc(analysis.created_at||'')} · 模型：${esc(analysis.model||'本地规则引擎')}</div>
+        </div>`;
+      } else {
+        anaEl.innerHTML = `<div class="banner" style="margin-bottom:16px">${svg('warn')} <span>尚未进行 AI 分析，上传合同后点击「AI 分析合同条款」自动提取重要条款。</span></div>`;
+      }
+    }
+    if (listEl) listEl.innerHTML = files.length ? `<div class="table-wrap"><table class="table">
+      <thead><tr><th>文件名</th><th>类型</th><th class="num">大小</th><th>上传人</th><th>时间</th><th></th></tr></thead>
+      <tbody>${files.map(f=>`<tr><td>${svg('doc')} ${esc(f.file_name)}</td><td>${esc(f.file_type||'')}</td>
+        <td class="num">${f.size ? (f.size>1024 ? (f.size/1024).toFixed(1)+' KB' : f.size+' B') : ''}</td>
+        <td>${esc(f.uploader||'')}</td><td class="small">${esc(f.uploaded_at||'')}</td>
+        <td class="actions">
+          ${canPreview(f.file_type) ? `<button class="btn sm" data-action="preview-file" data-id="${f.id}">在线查看</button>` : ''}
+          <button class="btn sm" data-action="download" data-url="/api/contract-files/${f.id}/download" data-name="${esc(f.file_name)}">下载</button>
+          ${canWrite('contract') ? iconBtn('delete-contract-file:' + f.id, 'trash', '删除', 'danger') : ''}
+        </td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">暂无附件，请上传合同扫描件、合同清单等</div>';
+    if (logEl) logEl.innerHTML = logs.length ? logs.map(l=>`<div class="row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
+      <div class="flex1"><span class="tag gray">${esc(l.action)}</span> <span>${esc(l.detail||'')}</span></div>
+      <span class="small muted">${esc(l.operator||'')} · ${esc(l.created_at||'')}</span></div>`).join('') : '<div class="empty">暂无操作记录</div>';
+  }
+
+  function canPreview(type) {
+    return ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp'].includes((type || '').toLowerCase());
+  }
+
+  async function uploadContractFile(input) {
+    const key = window._contractFilesKey;
+    if (!key || !input.files.length) return;
+    const fd = new FormData();
+    fd.append('file', input.files[0]);
+    try {
+      const res = await fetch(`/api/contracts/${key.direction}/${key.id}/files`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + localStorage.getItem(LS_TOKEN) },
+        body: fd
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '上传失败');
+      toast('附件已上传');
+      input.value = '';
+      await loadContractFilesModal(key.direction, key.id);
+      await handleAnalyzeContract();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleAnalyzeContract() {
+    const key = window._contractFilesKey;
+    if (!key) return;
+    try {
+      toast('AI 正在分析合同条款…');
+      await api(`/api/contracts/${key.direction}/${key.id}/analyze`, { method: 'POST', body: JSON.stringify({}) });
+      toast('合同条款分析完成');
+      await loadContractFilesModal(key.direction, key.id);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function previewContractFile(id) {
+    try {
+      const res = await fetch('/api/contract-files/' + id + '/view', { headers: { 'Authorization': 'Bearer ' + localStorage.getItem(LS_TOKEN) } });
+      if (!res.ok) throw new Error('预览失败');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleDeleteContractFile(id) {
+    openModal('删除确认', '<p>确认删除该附件吗？删除后将同步写入操作记录。</p>',
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认删除', cls: 'danger', action: 'confirm-delete-contract-file', id: 'del-contract-file-btn' }]),
+      () => { window._delContractFileId = id; });
+  }
+
+  async function confirmDeleteContractFile() {
+    try {
+      await api('/api/contract-files/' + window._delContractFileId, { method: 'DELETE' });
+      toast('附件已删除');
+      closeModal();
+      const key = window._contractFilesKey;
+      if (key) await handleContractFiles(key.direction + ':' + key.id);
     } catch (e) { toast(e.message, true); }
   }
 
@@ -2653,6 +2774,10 @@
     'edit-back-contract'(el) { handleEditBackContract(actionArg(el)); },
     'delete-back-contract'(el) { handleDeleteBackContract(actionArg(el)); },
     'edit-front-contract'(el) { handleEditFrontContract(actionArg(el)); },
+    'contract-files'(el) { handleContractFiles(actionArg(el)); },
+    'preview-file'(el) { previewContractFile(actionArg(el)); },
+    'delete-contract-file'(el) { handleDeleteContractFile(actionArg(el)); },
+    'analyze-contract': handleAnalyzeContract,
     'template-tab'(el) { window._templateType = el.dataset.tab; renderTemplates(); },
     'new-template': handleNewTemplate,
     'edit-template'(el) { handleEditTemplate(actionArg(el)); },
@@ -2699,6 +2824,7 @@
     'confirm-delete-docfile': confirmDeleteDocfile,
     'confirm-rebuild-folders': confirmRebuildFolders,
     'confirm-delete-back-contract': confirmDeleteBackContract,
+    'confirm-delete-contract-file': confirmDeleteContractFile,
     'confirm-delete-template': confirmDeleteTemplate,
     'confirm-delete-kb-category': confirmDeleteKbCategory,
     'confirm-delete-kb-article': confirmDeleteKbArticle,
@@ -2767,6 +2893,9 @@
   });
 
   document.addEventListener('change', (e) => {
+    if (e.target.matches('#contract-file-input') && e.target.files && e.target.files[0]) {
+      return uploadContractFile(e.target);
+    }
     if (e.target.matches('#pmo-ms-project')) {
       window._pmoMsProject = e.target.value;
       return renderPmo();

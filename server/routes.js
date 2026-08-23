@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
 const ExcelJS = require('exceljs');
+const pdfParse = require('pdf-parse');
+const mammoth = require('mammoth');
 const { db, encrypt, decrypt, seedDocFolders, UPLOAD_DIR, hashPassword } = require('./db');
 const { login, logout, requireAuth, requireAdmin, requireWrite, getSessionUser, fmt } = require('./auth');
 const ai = require('./ai');
@@ -631,6 +633,138 @@ function registerRoutes(app, upload) {
       : db.prepare(`SELECT f.*, p.name AS project_name FROM fund_out f LEFT JOIN projects p ON p.id = f.project_id ORDER BY f.plan_date, f.id`).all())
       .map((f) => ({ ...deriveFund(f), direction: 'backward', contract: '后向支付' }));
     res.json([...inRows, ...outRows]);
+  });
+
+  // ---------------- contract attachments & operation logs ----------------
+  function mimeOf(ext) {
+    const map = {
+      pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+      txt: 'text/plain; charset=utf-8', md: 'text/markdown; charset=utf-8', csv: 'text/csv; charset=utf-8',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      xls: 'application/vnd.ms-excel',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      doc: 'application/msword', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      zip: 'application/zip'
+    };
+    return map[(ext || '').toLowerCase()] || 'application/octet-stream';
+  }
+
+  function logOperation(module, targetType, targetId, action, detail, operator) {
+    db.prepare('INSERT INTO operation_logs(module,target_type,target_id,action,detail,operator) VALUES(?,?,?,?,?,?)')
+      .run(module, targetType, targetId, action, detail || '', operator || '');
+  }
+
+  function contractExists(direction, id) {
+    if (direction === 'forward') return !!db.prepare('SELECT id FROM projects WHERE id = ?').get(id);
+    return !!db.prepare('SELECT id FROM sub_contracts WHERE id = ?').get(Number(id));
+  }
+
+  app.get('/api/contracts/:direction/:id/files', requireAuth, (req, res) => {
+    const { direction, id } = req.params;
+    if (!['forward', 'backward'].includes(direction)) return sendError(res, 400, '方向不合法');
+    res.json(db.prepare('SELECT * FROM contract_files WHERE direction = ? AND contract_id = ? ORDER BY uploaded_at DESC').all(direction, id));
+  });
+
+  app.get('/api/contracts/:direction/:id/logs', requireAuth, (req, res) => {
+    const { direction, id } = req.params;
+    res.json(db.prepare(`SELECT * FROM operation_logs WHERE target_type = ? AND target_id = ? ORDER BY id DESC LIMIT 200`)
+      .all(`contract-${direction}`, id));
+  });
+
+  app.post('/api/contracts/:direction/:id/files', requireAuth, requireWrite('contract'), upload.single('file'), (req, res) => {
+    const { direction, id } = req.params;
+    if (!req.file) return sendError(res, 400, '请选择文件');
+    if (!contractExists(direction, id)) return sendError(res, 404, '合同不存在');
+    const original = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+    const ext = (path.extname(req.file.originalname) || '').replace('.', '').toLowerCase();
+    const r = db.prepare(`INSERT INTO contract_files(direction,contract_id,file_name,file_type,size,path,uploader)
+      VALUES(?,?,?,?,?,?,?)`)
+      .run(direction, id, original, ext, req.file.size, req.file.filename, req.user ? req.user.name : '');
+    logOperation('contract', `contract-${direction}`, id, 'upload', `上传附件：${original}`, req.user ? req.user.name : '');
+    res.json(db.prepare('SELECT * FROM contract_files WHERE id = ?').get(Number(r.lastInsertRowid)));
+  });
+
+  app.get('/api/contract-files/:id/view', requireAuth, (req, res) => {
+    const f = db.prepare('SELECT * FROM contract_files WHERE id = ?').get(Number(req.params.id));
+    if (!f) return sendError(res, 404, '文件不存在');
+    const p = path.join(UPLOAD_DIR, f.path);
+    if (!fs.existsSync(p)) return sendError(res, 404, '文件已丢失');
+    logOperation('contract', `contract-${f.direction}`, f.contract_id, 'view', `在线查看：${f.file_name}`, req.user ? req.user.name : '');
+    res.setHeader('Content-Type', mimeOf(f.file_type));
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(f.file_name)}`);
+    fs.createReadStream(p).pipe(res);
+  });
+
+  app.get('/api/contract-files/:id/download', requireAuth, (req, res) => {
+    const f = db.prepare('SELECT * FROM contract_files WHERE id = ?').get(Number(req.params.id));
+    if (!f) return sendError(res, 404, '文件不存在');
+    const p = path.join(UPLOAD_DIR, f.path);
+    if (!fs.existsSync(p)) return sendError(res, 404, '文件已丢失');
+    logOperation('contract', `contract-${f.direction}`, f.contract_id, 'download', `下载附件：${f.file_name}`, req.user ? req.user.name : '');
+    res.download(p, f.file_name);
+  });
+
+  app.delete('/api/contract-files/:id', requireAuth, requireWrite('contract'), (req, res) => {
+    const f = db.prepare('SELECT * FROM contract_files WHERE id = ?').get(Number(req.params.id));
+    if (!f) return sendError(res, 404, '文件不存在');
+    if (f.path) {
+      const p = path.join(UPLOAD_DIR, f.path);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+    db.prepare('DELETE FROM contract_files WHERE id = ?').run(f.id);
+    logOperation('contract', `contract-${f.direction}`, f.contract_id, 'delete', `删除附件：${f.file_name}`, req.user ? req.user.name : '');
+    res.json({ ok: true });
+  });
+
+  // ---------------- contract AI clause analysis ----------------
+  async function extractContractText(file) {
+    const fullPath = path.join(UPLOAD_DIR, file.path);
+    const ext = (file.file_type || '').toLowerCase();
+    try {
+      if (ext === 'pdf') {
+        const buf = fs.readFileSync(fullPath);
+        const data = await pdfParse(buf);
+        return data.text || '';
+      }
+      if (ext === 'docx') {
+        const result = await mammoth.extractRawText({ path: fullPath });
+        return result.value || '';
+      }
+      if (['txt', 'md', 'csv'].includes(ext)) {
+        return fs.readFileSync(fullPath, 'utf8');
+      }
+    } catch (e) {
+      // 忽略解析错误，交由上层处理
+    }
+    return '';
+  }
+
+  app.get('/api/contracts/:direction/:id/analysis', requireAuth, (req, res) => {
+    const { direction, id } = req.params;
+    const row = db.prepare('SELECT * FROM contract_analyses WHERE direction = ? AND contract_id = ? ORDER BY id DESC LIMIT 1').get(direction, id);
+    if (!row) return res.json(null);
+    res.json({ ...row, clauses: safeJson(row.clauses, []) });
+  });
+
+  app.post('/api/contracts/:direction/:id/analyze', requireAuth, requireWrite('contract'), async (req, res) => {
+    const { direction, id } = req.params;
+    const fileId = req.body && req.body.fileId;
+    const file = fileId
+      ? db.prepare('SELECT * FROM contract_files WHERE id = ?').get(Number(fileId))
+      : db.prepare('SELECT * FROM contract_files WHERE direction = ? AND contract_id = ? ORDER BY id DESC LIMIT 1').get(direction, id);
+    if (!file) return sendError(res, 404, '请先上传合同文件');
+    let text = await extractContractText(file);
+    if (!text) {
+      text = `文件名：${file.file_name}`;
+    }
+    const analysis = await ai.analyzeContractClauses(text);
+    const r = db.prepare(`INSERT INTO contract_analyses(direction,contract_id,file_id,title,summary,risk_level,clauses,model)
+      VALUES(?,?,?,?,?,?,?,?)`)
+      .run(direction, id, file.id, analysis.title || '合同重要条款分析', analysis.summary || '', analysis.risk_level || 'green',
+        JSON.stringify(analysis.clauses || []), analysis.model || '');
+    logOperation('contract', `contract-${direction}`, id, 'analyze', `AI 分析合同条款：${file.file_name}`, req.user ? req.user.name : '');
+    const saved = db.prepare('SELECT * FROM contract_analyses WHERE id = ?').get(Number(r.lastInsertRowid));
+    res.json({ ...saved, clauses: safeJson(saved.clauses, []) });
   });
 
   app.post('/api/contracts/backward', requireAuth, requireWrite('contract'), (req, res) => {

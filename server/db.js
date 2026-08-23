@@ -313,6 +313,42 @@ CREATE TABLE IF NOT EXISTS project_changes (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS contract_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  direction TEXT NOT NULL,
+  contract_id TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  file_type TEXT,
+  size INTEGER NOT NULL DEFAULT 0,
+  path TEXT NOT NULL,
+  uploader TEXT,
+  uploaded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS operation_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  module TEXT NOT NULL DEFAULT 'contract',
+  target_type TEXT,
+  target_id TEXT,
+  action TEXT NOT NULL,
+  detail TEXT,
+  operator TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS contract_analyses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  direction TEXT NOT NULL,
+  contract_id TEXT NOT NULL,
+  file_id INTEGER,
+  title TEXT,
+  summary TEXT,
+  risk_level TEXT,
+  clauses TEXT NOT NULL DEFAULT '[]',
+  model TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 `);
 
 function ensureColumns(table, columns) {

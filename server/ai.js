@@ -119,4 +119,56 @@ function mockKnowledge(question) {
   };
 }
 
-module.exports = { callModel, mockExtract, mockRiskReview, mockDocGen, mockReminders, mockKnowledge, capabilityConfig };
+function localClauseAnalysis(text) {
+  const source = String(text || '');
+  const sentences = source
+    .replace(/\r/g, '\n')
+    .split(/[。；;\n]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 8);
+  const categories = [
+    ['付款条款', ['付款', '支付', '到账', '发票', '回款']],
+    ['交付与工期', ['工期', '交付', '完工', '验收', '进度']],
+    ['质保与售后', ['质保', '保修', '维保', '售后']],
+    ['违约责任', ['违约', '赔偿', '责任', '逾期']],
+    ['保密条款', ['保密', '信息']],
+    ['知识产权', ['知识产权', '著作权', '软件', '专利']],
+    ['变更条款', ['变更', '调整', '核减']],
+    ['保证金', ['保证金', '保函', '履约']]
+  ];
+  const clauses = [];
+  for (const [category, keywords] of categories) {
+    let count = 0;
+    for (const s of sentences) {
+      if (keywords.some((k) => s.includes(k)) && !clauses.some((c) => c.content === s)) {
+        clauses.push({ category, name: `${category} · 条款${clauses.length + 1}`, content: s });
+        count++;
+        if (count >= 2) break;
+      }
+      if (clauses.length >= 12) break;
+    }
+    if (clauses.length >= 12) break;
+  }
+  const summary = source.slice(0, 120) + (source.length > 120 ? '…' : '');
+  const riskLevel = /违约|赔偿|逾期|罚款/.test(source) ? 'yellow' : 'green';
+  return {
+    title: '合同重要条款分析',
+    summary,
+    risk_level: riskLevel,
+    clauses: clauses.length ? clauses : [{ category: '提示', name: '未识别到条款', content: '请确认上传文件为可提取文本的 PDF、Word 或文本文件。' }]
+  };
+}
+
+async function analyzeContractClauses(text) {
+  const prompt = `请分析以下合同文本，输出 JSON：{"title":"合同重要条款分析","summary":"合同要点概述","risk_level":"red/yellow/green","clauses":[{"category":"付款条款/交付与工期/质保与售后/违约责任/保密条款/知识产权/变更条款/保证金等","name":"条款名称","content":"条款原文或归纳"}]}。只输出 JSON。\n合同文本：\n${String(text).slice(0, 20000)}`;
+  const fallback = JSON.stringify(localClauseAnalysis(text), null, 2);
+  const result = await callModel('riskReview', prompt, fallback);
+  try {
+    const data = JSON.parse(result.replace(/```json|```/g, '').trim());
+    return { ...data, clauses: Array.isArray(data.clauses) ? data.clauses : [] };
+  } catch (e) {
+    return localClauseAnalysis(text);
+  }
+}
+
+module.exports = { callModel, mockExtract, mockRiskReview, mockDocGen, mockReminders, mockKnowledge, capabilityConfig, analyzeContractClauses };

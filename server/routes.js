@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
+const ExcelJS = require('exceljs');
 const { db, encrypt, decrypt, seedDocFolders, UPLOAD_DIR, hashPassword } = require('./db');
 const { login, logout, requireAuth, requireAdmin, requireWrite, getSessionUser, fmt } = require('./auth');
 const ai = require('./ai');
@@ -52,14 +53,23 @@ function sendError(res, code, message) {
   return res.status(code).json({ error: message });
 }
 
-function buildMenuTree() {
+function menuVisibleForRole(m, role) {
+  if (role === 'admin') return true;
+  let roles = [];
+  try { roles = JSON.parse(m.roles || '[]'); } catch (e) { roles = []; }
+  return roles.includes(role);
+}
+
+function buildMenuTree(role) {
   const flat = db.prepare('SELECT * FROM menu_config ORDER BY sort_order, id').all();
-  const top = flat.filter((m) => !m.parent_id);
-  const children = flat.filter((m) => m.parent_id);
+  const allowed = flat.filter((m) => m.visible && menuVisibleForRole(m, role || 'admin'));
+  const top = allowed.filter((m) => !m.parent_id);
+  const children = allowed.filter((m) => m.parent_id);
   return top.map((m) => ({
     ...m,
     visible: !!m.visible,
-    children: children.filter((c) => c.parent_id === m.id)
+    children: children.filter((c) => c.parent_id === m.id),
+    roles: safeJson(m.roles, [])
   }));
 }
 
@@ -85,11 +95,11 @@ function registerRoutes(app, upload) {
 
   // ---------------- menu ----------------
   app.get('/api/menu', requireAuth, (req, res) => {
-    res.json(buildMenuTree());
+    res.json(buildMenuTree(req.user.role));
   });
 
   app.get('/api/menu/items', requireAuth, (req, res) => {
-    res.json(db.prepare('SELECT * FROM menu_config ORDER BY sort_order, id').all());
+    res.json(db.prepare('SELECT * FROM menu_config ORDER BY sort_order, id').all().map((m) => ({ ...m, roles: safeJson(m.roles, []) })));
   });
 
   app.post('/api/menu/items', requireAuth, requireWrite('menu'), (req, res) => {
@@ -97,9 +107,10 @@ function registerRoutes(app, upload) {
     if (!b.key || !b.display) return sendError(res, 400, '缺少 key 或显示名');
     const keyExists = db.prepare('SELECT id FROM menu_config WHERE key = ?').get(b.key);
     if (keyExists) return sendError(res, 409, '菜单 key 已存在');
-    const r = db.prepare(`INSERT INTO menu_config(parent_id,key,name,display,href,remark,sort_order,visible)
-      VALUES(?,?,?,?,?,?,?,?)`)
-      .run(b.parent_id || null, b.key, b.name || b.display, b.display, b.href || '', b.remark || '', Number(b.sort_order || 0), b.visible === false ? 0 : 1);
+    const roles = JSON.stringify(Array.isArray(b.roles) && b.roles.length ? b.roles : ['admin', 'viewer']);
+    const r = db.prepare(`INSERT INTO menu_config(parent_id,key,name,display,href,remark,sort_order,visible,roles)
+      VALUES(?,?,?,?,?,?,?,?,?)`)
+      .run(b.parent_id || null, b.key, b.name || b.display, b.display, b.href || '', b.remark || '', Number(b.sort_order || 0), b.visible === false ? 0 : 1, roles);
     res.json(db.prepare('SELECT * FROM menu_config WHERE id = ?').get(Number(r.lastInsertRowid)));
   });
 
@@ -111,10 +122,11 @@ function registerRoutes(app, upload) {
     const key = b.key ?? cur.key;
     const conflict = db.prepare('SELECT id FROM menu_config WHERE key = ? AND id != ?').get(key, id);
     if (conflict) return sendError(res, 409, '菜单 key 已存在');
-    db.prepare(`UPDATE menu_config SET parent_id=?, key=?, name=?, display=?, href=?, remark=?, sort_order=?, visible=?
+    db.prepare(`UPDATE menu_config SET parent_id=?, key=?, name=?, display=?, href=?, remark=?, sort_order=?, visible=?, roles=?
       WHERE id=?`)
       .run(b.parent_id ?? cur.parent_id, key, b.name ?? cur.name, b.display ?? cur.display, b.href ?? cur.href,
-        b.remark ?? cur.remark, Number(b.sort_order ?? cur.sort_order), b.visible === false ? 0 : 1, id);
+        b.remark ?? cur.remark, Number(b.sort_order ?? cur.sort_order), b.visible === false ? 0 : 1,
+        JSON.stringify(Array.isArray(b.roles) && b.roles.length ? b.roles : safeJson(cur.roles, [])), id);
     res.json(db.prepare('SELECT * FROM menu_config WHERE id = ?').get(id));
   });
 
@@ -137,6 +149,7 @@ function registerRoutes(app, upload) {
       remark: m.remark,
       sort_order: m.sort_order,
       visible: !!m.visible,
+      roles: safeJson(m.roles, []),
       parent_key: m.parent_id ? (byId.get(m.parent_id) ? byId.get(m.parent_id).key : '') : ''
     }));
     res.json({ version: 1, type: 'pms-menu-config', items: exported });
@@ -148,15 +161,19 @@ function registerRoutes(app, upload) {
       type: 'pms-menu-config',
       description: '菜单显示配置模板：key 唯一；parent_key 为空表示顶级菜单；visible 为 true/false；sort_order 控制排序。',
       items: [
-        { key: 'overview', name: '总览', display: '总览', href: '#/overview', remark: '项目组合看板与统计', sort_order: 1, visible: true, parent_key: '' },
-        { key: 'project', name: '项目', display: '项目', href: '#/projects', remark: '项目全生命周期管理', sort_order: 2, visible: true, parent_key: '' },
-        { key: 'projects', name: '项目选择', display: '项目选择', href: '#/projects', remark: '项目列表与工作区入口', sort_order: 1, visible: true, parent_key: 'project' },
-        { key: 'project-detail', name: '项目信息表', display: '项目信息表', href: '#/project-detail', remark: '基本信息与前后向资金', sort_order: 2, visible: true, parent_key: 'project' },
-        { key: 'project-stages', name: '三阶段流程', display: '三阶段流程', href: '#/project-stages', remark: '启动 / 实施 / 收尾', sort_order: 3, visible: true, parent_key: 'project' },
-        { key: 'docs', name: '文档', display: '文档', href: '#/documents', remark: '文档中心与标准化模板', sort_order: 3, visible: true, parent_key: '' },
-        { key: 'remind', name: '提醒', display: '提醒', href: '#/reminders', remark: '回款 / 里程碑 / 风险提醒', sort_order: 4, visible: true, parent_key: '' },
-        { key: 'ai', name: 'AI 配置', display: 'AI 配置', href: '#/ai-config', remark: '大模型接入与能力管理', sort_order: 5, visible: true, parent_key: '' },
-        { key: 'settings', name: '设置', display: '设置', href: '#/settings', remark: '菜单自定义与系统配置', sort_order: 6, visible: true, parent_key: '' }
+        { key: 'overview', name: '总览', display: '总览', href: '#/overview', remark: '项目组合看板与统计', sort_order: 1, visible: true, roles: ['admin', 'viewer'], parent_key: '' },
+        { key: 'project', name: '项目', display: '项目', href: '#/projects', remark: '项目全生命周期管理', sort_order: 2, visible: true, roles: ['admin', 'viewer'], parent_key: '' },
+        { key: 'projects', name: '项目选择', display: '项目选择', href: '#/projects', remark: '项目列表与工作区入口', sort_order: 1, visible: true, roles: ['admin', 'viewer'], parent_key: 'project' },
+        { key: 'project-detail', name: '项目信息表', display: '项目信息表', href: '#/project-detail', remark: '基本信息与前后向资金', sort_order: 2, visible: true, roles: ['admin', 'viewer'], parent_key: 'project' },
+        { key: 'project-stages', name: '三阶段流程', display: '三阶段流程', href: '#/project-stages', remark: '启动 / 实施 / 收尾', sort_order: 3, visible: true, roles: ['admin', 'viewer'], parent_key: 'project' },
+        { key: 'contracts', name: '合同管理', display: '合同管理', href: '#/contracts', remark: '前向/后向合同台账与付款计划', sort_order: 3, visible: true, roles: ['admin', 'viewer'], parent_key: '' },
+        { key: 'docs', name: '文档', display: '文档', href: '#/documents', remark: '文档中心与标准化模板', sort_order: 4, visible: true, roles: ['admin', 'viewer'], parent_key: '' },
+        { key: 'templates', name: '模板管理', display: '模板管理', href: '#/templates', remark: '文档/项目/合同模板与版本管理', sort_order: 5, visible: true, roles: ['admin', 'viewer'], parent_key: '' },
+        { key: 'pmo', name: 'PMO管理', display: 'PMO管理', href: '#/pmo', remark: '项目管理办公室工作台与成员', sort_order: 6, visible: true, roles: ['admin'], parent_key: '' },
+        { key: 'kb', name: '知识库', display: '知识库', href: '#/kb', remark: '项目管理知识库与 AI 问答', sort_order: 7, visible: true, roles: ['admin', 'viewer'], parent_key: '' },
+        { key: 'remind', name: '提醒', display: '提醒', href: '#/reminders', remark: '回款 / 里程碑 / 风险提醒', sort_order: 8, visible: true, roles: ['admin', 'viewer'], parent_key: '' },
+        { key: 'ai', name: 'AI 配置', display: 'AI 配置', href: '#/ai-config', remark: '大模型接入与能力管理', sort_order: 9, visible: true, roles: ['admin'], parent_key: '' },
+        { key: 'settings', name: '设置', display: '设置', href: '#/settings', remark: '菜单自定义与系统配置', sort_order: 10, visible: true, roles: ['admin'], parent_key: '' }
       ]
     });
   });
@@ -177,27 +194,35 @@ function registerRoutes(app, upload) {
         remark: String(m.remark || ''),
         sort_order: Number(m.sort_order || 0),
         visible: m.visible === false ? 0 : 1,
+        roles: Array.isArray(m.roles) && m.roles.length ? m.roles : ['admin', 'viewer'],
         parent_key: m.parent_key || ''
       });
     }
     const keys = new Set(normalized.map((m) => m.key));
     if (keys.size !== normalized.length) return sendError(res, 400, '菜单 key 存在重复');
-    db.prepare('DELETE FROM menu_config').run();
-    const insert = db.prepare(`INSERT INTO menu_config(parent_id,key,name,display,href,remark,sort_order,visible)
-      VALUES(?,?,?,?,?,?,?,?)`);
-    const keyToId = new Map();
-    // 先插入顶级，再插入子级
-    const top = normalized.filter((m) => !m.parent_key || !keys.has(m.parent_key));
-    const children = normalized.filter((m) => m.parent_key && keys.has(m.parent_key));
-    for (const m of top) {
-      const r = insert.run(null, m.key, m.name, m.display, m.href, m.remark, m.sort_order, m.visible);
-      keyToId.set(m.key, Number(r.lastInsertRowid));
+    // 增量合并：按 key 更新或新增，不删除未在导入文件中的菜单
+    const keyToId = new Map(db.prepare('SELECT key, id FROM menu_config').all().map((r) => [r.key, r.id]));
+    const insert = db.prepare(`INSERT INTO menu_config(parent_id,key,name,display,href,remark,sort_order,visible,roles)
+      VALUES(?,?,?,?,?,?,?,?,?)`);
+    const update = db.prepare(`UPDATE menu_config SET name=?, display=?, href=?, remark=?, sort_order=?, visible=?, roles=? WHERE key=?`);
+    let added = 0, updated = 0;
+    for (const m of normalized) {
+      if (keyToId.has(m.key)) {
+        update.run(m.name, m.display, m.href, m.remark, m.sort_order, m.visible, JSON.stringify(m.roles), m.key);
+        updated++;
+      } else {
+        const r = insert.run(null, m.key, m.name, m.display, m.href, m.remark, m.sort_order, m.visible, JSON.stringify(m.roles));
+        keyToId.set(m.key, Number(r.lastInsertRowid));
+        added++;
+      }
     }
-    for (const m of children) {
-      const r = insert.run(keyToId.get(m.parent_key) || null, m.key, m.name, m.display, m.href, m.remark, m.sort_order, m.visible);
-      keyToId.set(m.key, Number(r.lastInsertRowid));
+    // 第二遍：重建父子关系
+    const setParent = db.prepare('UPDATE menu_config SET parent_id=? WHERE key=?');
+    for (const m of normalized) {
+      if (m.parent_key && keyToId.has(m.parent_key)) setParent.run(keyToId.get(m.parent_key), m.key);
+      else if (!m.parent_key) setParent.run(null, m.key);
     }
-    res.json({ ok: true, count: normalized.length });
+    res.json({ ok: true, count: normalized.length, added, updated });
   });
 
   // ---------------- settings: project display mode ----------------
@@ -313,6 +338,107 @@ function registerRoutes(app, upload) {
     if (!p) return sendError(res, 404, '项目不存在');
     db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id);
     res.json({ ok: true });
+  });
+
+  // ---------------- project batch import ----------------
+  const IMPORT_COLUMNS = [
+    ['name', '项目名称'], ['project_no', '项目编号'], ['group_opportunity_code', '集团商机编码'], ['approval_complete_date', '立项完成时间'],
+    ['amount', '项目金额(万)'], ['start_date', '开工时间'], ['expected_acceptance_date', '预计终验时间'], ['sign_archive_date', '签约归档时间'],
+    ['our_unit', '我方单位'], ['customer_name', '客户名称'], ['unit', '对方单位'], ['type', '项目类型'],
+    ['stage', '阶段'], ['risk', '风险'], ['sign_date', '签约日期'], ['deadline', '截止日期'], ['pm', '项目经理'], ['remark', '备注'],
+    ['forward_contract_code', '前向合同编码'], ['forward_contract_name', '前向合同名称'], ['forward_contract_amount', '前向签约金额(万)'], ['forward_sign_date', '前向签约时间'],
+    ['backward_contract_code', '后向合同编码'], ['backward_contract_name', '后向合同名称'], ['backward_unit_name', '后向单位名称'], ['backward_contract_amount', '后向签约金额(万)'], ['backward_sign_date', '后向签约时间']
+  ];
+
+  app.get('/api/project-import-template', requireAuth, async (req, res) => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('项目导入模板');
+    ws.columns = IMPORT_COLUMNS.map(([key, header]) => ({ header, key, width: 20 }));
+    ws.addRow({
+      name: '示例：智慧园区智能化改造', project_no: 'XM-2026-099', group_opportunity_code: 'SJ-2026-0099',
+      approval_complete_date: '2026-08-01', amount: 1000, start_date: '2026-08-10', expected_acceptance_date: '2027-03-31',
+      sign_archive_date: '2027-04-15', our_unit: '江苏智联科技有限公司', customer_name: 'XX单位', unit: 'XX单位',
+      type: '系统集成', stage: '启动', risk: 'green', sign_date: '2026-08-01', deadline: '2027-03-31', pm: '陈志远', remark: '',
+      forward_contract_code: 'FW-2026-099', forward_contract_name: '示例合同', forward_contract_amount: 1000, forward_sign_date: '2026-08-01',
+      backward_contract_code: 'HW-2026-099', backward_contract_name: '示例后向合同', backward_unit_name: 'XX供应商', backward_contract_amount: 600, backward_sign_date: '2026-08-02'
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="pms-project-import-template.xlsx"');
+    await wb.xlsx.write(res);
+    res.end();
+  });
+
+  function cellToDate(v) {
+    if (v instanceof Date) {
+      const p = (n) => String(n).padStart(2, '0');
+      return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`;
+    }
+    const s = String(v == null ? '' : v).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    if (/^\d{4}\/\d{1,2}\/\d{1,2}/.test(s)) {
+      const parts = s.slice(0, 10).split('/');
+      return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+    }
+    return s;
+  }
+
+  app.post('/api/projects/import', requireAuth, requireWrite('project'), upload.single('file'), async (req, res) => {
+    if (!req.file) return sendError(res, 400, '请选择 Excel 文件');
+    const wb = new ExcelJS.Workbook();
+    let ws;
+    try {
+      await wb.xlsx.readFile(req.file.path);
+      ws = wb.worksheets[0];
+    } catch (e) {
+      return sendError(res, 400, '文件解析失败，请使用模板格式的 xlsx 文件');
+    }
+    const headers = {};
+    const rows = [];
+    ws.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) {
+        row.eachCell((cell, col) => {
+          const text = String(cell.value == null ? '' : cell.value).trim();
+          const colDef = IMPORT_COLUMNS.find(([, h]) => h === text);
+          if (colDef) headers[col] = colDef[0];
+        });
+        return;
+      }
+      const obj = {};
+      row.eachCell((cell, col) => {
+        if (headers[col]) obj[headers[col]] = cell.value;
+      });
+      if (Object.keys(obj).length) rows.push(obj);
+    });
+    const result = { total: rows.length, success: 0, failed: [] };
+    const insert = db.prepare(`INSERT INTO projects(id,name,project_no,group_opportunity_code,approval_complete_date,start_date,expected_acceptance_date,sign_archive_date,our_unit,unit,customer_name,forward_contract_code,forward_contract_name,forward_contract_amount,forward_sign_date,backward_contract_code,backward_contract_name,backward_unit_name,backward_contract_amount,backward_sign_date,amount,paid,risk,stage,type,sign_date,deadline,pm,remark,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const lineNo = i + 2;
+      const name = String(row.name == null ? '' : row.name).trim();
+      if (!name) { result.failed.push({ row: lineNo, reason: '项目名称为空' }); continue; }
+      const projectNo = String(row.project_no == null ? '' : row.project_no).trim();
+      if (projectNo && db.prepare('SELECT id FROM projects WHERE project_no = ?').get(projectNo)) {
+        result.failed.push({ row: lineNo, reason: `项目编号 ${projectNo} 已存在，已跳过` });
+        continue;
+      }
+      const id = 'p' + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36) + i;
+      const s = (v) => String(v == null ? '' : v).trim();
+      try {
+        insert.run(id, name, projectNo, s(row.group_opportunity_code), cellToDate(row.approval_complete_date), cellToDate(row.start_date),
+          cellToDate(row.expected_acceptance_date), cellToDate(row.sign_archive_date), s(row.our_unit), s(row.unit), s(row.customer_name) || s(row.unit),
+          s(row.forward_contract_code), s(row.forward_contract_name), Number(row.forward_contract_amount || 0), cellToDate(row.forward_sign_date),
+          s(row.backward_contract_code), s(row.backward_contract_name), s(row.backward_unit_name), Number(row.backward_contract_amount || 0), cellToDate(row.backward_sign_date),
+          Number(row.amount || 0), 0, ['red', 'yellow', 'green'].includes(s(row.risk)) ? s(row.risk) : 'green',
+          ['启动', '实施', '收尾'].includes(s(row.stage)) ? s(row.stage) : '启动', s(row.type),
+          cellToDate(row.sign_date), cellToDate(row.deadline), s(row.pm) || '陈志远', s(row.remark), now(), now());
+        seedDocFolders(id);
+        result.success++;
+      } catch (e) {
+        result.failed.push({ row: lineNo, reason: e.message || '写入失败' });
+      }
+    }
+    res.json(result);
   });
 
   // ---------------- fund in ----------------
@@ -435,6 +561,89 @@ function registerRoutes(app, upload) {
         remainingSignable: Math.round((p.amount - signed) * 100) / 100
       }
     });
+  });
+
+  // ---------------- contract management ----------------
+  app.get('/api/contracts', requireAuth, (req, res) => {
+    const direction = req.query.direction || '';
+    const forward = db.prepare(`SELECT id, name, project_no, customer_name, unit, forward_contract_code, forward_contract_name,
+      forward_contract_amount, forward_sign_date, stage, risk FROM projects`).all()
+      .map((p) => ({
+        id: `f-${p.id}`,
+        direction: 'forward',
+        code: p.forward_contract_code || p.project_no || p.id,
+        name: p.forward_contract_name || `${p.name}合同`,
+        partner: p.customer_name || p.unit || '',
+        amount: p.forward_contract_amount || p.amount,
+        sign_date: p.forward_sign_date || '',
+        project_id: p.id,
+        project_name: p.name,
+        stage: p.stage,
+        risk: p.risk
+      }));
+    const backward = db.prepare(`SELECT s.*, p.name AS project_name FROM sub_contracts s LEFT JOIN projects p ON p.id = s.project_id ORDER BY s.id`).all()
+      .map((c) => ({
+        id: `b-${c.id}`,
+        direction: 'backward',
+        code: c.code || '',
+        name: c.name,
+        partner: c.supplier || '',
+        amount: c.signable,
+        signed: c.signed,
+        paid: c.paid,
+        sign_date: c.sign_date || '',
+        project_id: c.project_id,
+        project_name: c.project_name || '',
+        stage: '',
+        risk: '',
+        rawId: c.id
+      }));
+    let list = [...forward, ...backward];
+    if (direction === 'forward') list = forward;
+    if (direction === 'backward') list = backward;
+    res.json(list);
+  });
+
+  app.get('/api/contracts/plans', requireAuth, (req, res) => {
+    const inRows = db.prepare(`SELECT f.*, p.name AS project_name FROM fund_in f LEFT JOIN projects p ON p.id = f.project_id ORDER BY f.plan_date, f.id`).all()
+      .map((f) => ({ ...deriveFund(f), direction: 'forward', contract: '前向回款' }));
+    const outRows = db.prepare(`SELECT f.*, p.name AS project_name FROM fund_out f LEFT JOIN projects p ON p.id = f.project_id ORDER BY f.plan_date, f.id`).all()
+      .map((f) => ({ ...deriveFund(f), direction: 'backward', contract: '后向支付' }));
+    res.json([...inRows, ...outRows]);
+  });
+
+  app.post('/api/contracts/backward', requireAuth, requireWrite('contract'), (req, res) => {
+    const b = req.body || {};
+    if (!b.name || !b.project_id) return sendError(res, 400, '合同名称和关联项目不能为空');
+    const r = db.prepare(`INSERT INTO sub_contracts(project_id,code,name,supplier,signable,signed,paid,sign_date,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`)
+      .run(b.project_id, b.code || '', b.name, b.supplier || '', Number(b.signable || 0), Number(b.signed || 0), Number(b.paid || 0), b.sign_date || null, now(), now());
+    res.json(db.prepare('SELECT * FROM sub_contracts WHERE id = ?').get(Number(r.lastInsertRowid)));
+  });
+
+  app.put('/api/contracts/backward/:id', requireAuth, requireWrite('contract'), (req, res) => {
+    const cur = db.prepare('SELECT * FROM sub_contracts WHERE id = ?').get(Number(req.params.id));
+    if (!cur) return sendError(res, 404, '合同不存在');
+    const b = req.body || {};
+    db.prepare(`UPDATE sub_contracts SET code=?, name=?, supplier=?, signable=?, signed=?, paid=?, sign_date=?, updated_at=? WHERE id=?`)
+      .run(b.code ?? cur.code, b.name ?? cur.name, b.supplier ?? cur.supplier, Number(b.signable ?? cur.signable),
+        Number(b.signed ?? cur.signed), Number(b.paid ?? cur.paid), b.sign_date ?? cur.sign_date, now(), cur.id);
+    res.json(db.prepare('SELECT * FROM sub_contracts WHERE id = ?').get(cur.id));
+  });
+
+  app.delete('/api/contracts/backward/:id', requireAuth, requireWrite('contract'), (req, res) => {
+    db.prepare('DELETE FROM sub_contracts WHERE id = ?').run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.put('/api/contracts/forward/:projectId', requireAuth, requireWrite('contract'), (req, res) => {
+    const p = project(req.params.projectId);
+    if (!p) return sendError(res, 404, '项目不存在');
+    const b = req.body || {};
+    db.prepare(`UPDATE projects SET forward_contract_code=?, forward_contract_name=?, forward_contract_amount=?, forward_sign_date=?, updated_at=? WHERE id=?`)
+      .run(b.forward_contract_code ?? p.forward_contract_code, b.forward_contract_name ?? p.forward_contract_name,
+        Number(b.forward_contract_amount ?? p.forward_contract_amount), b.forward_sign_date ?? p.forward_sign_date, now(), p.id);
+    res.json(deriveProject(project(p.id)));
   });
 
   // ---------------- document folders ----------------
@@ -591,6 +800,183 @@ function registerRoutes(app, upload) {
       .run(b.enabled === undefined ? cur.enabled : (b.enabled ? 1 : 0),
         JSON.stringify(b.channels ?? safeJson(cur.channels, [])), b.trigger_desc ?? cur.trigger_desc, cur.id);
     res.json(db.prepare('SELECT * FROM remind_rules WHERE id = ?').get(cur.id));
+  });
+
+  // ---------------- PMO management ----------------
+  app.get('/api/pmo/summary', requireAuth, (req, res) => {
+    const members = db.prepare('SELECT id, username, name, role, created_at FROM users ORDER BY id').all();
+    const projects = db.prepare('SELECT * FROM projects').all().map(deriveProject);
+    const byPmMap = {};
+    for (const p of projects) {
+      const pm = p.pm || '未分配';
+      if (!byPmMap[pm]) byPmMap[pm] = { pm, count: 0, riskCount: 0, totalAmount: 0, paid: 0, projects: [] };
+      byPmMap[pm].count++;
+      if (p.risk === 'red') byPmMap[pm].riskCount++;
+      byPmMap[pm].totalAmount += p.amount || 0;
+      byPmMap[pm].paid += p.paid || 0;
+      byPmMap[pm].projects.push({ id: p.id, name: p.name, stage: p.stage, risk: p.risk, deadline: p.deadline });
+    }
+    const byPm = Object.values(byPmMap).map((x) => ({
+      ...x,
+      totalAmount: Math.round(x.totalAmount * 100) / 100,
+      avgRatio: x.totalAmount > 0 ? Math.round(x.paid / x.totalAmount * 10000) / 100 : 0
+    }));
+    const risks = projects.filter((p) => p.risk !== 'green').map((p) => ({ id: p.id, name: p.name, risk: p.risk, remark: p.remark, pm: p.pm }));
+    const t = today();
+    const milestones = db.prepare('SELECT * FROM fund_in WHERE plan_date IS NOT NULL AND recv_date IS NULL ORDER BY plan_date LIMIT 30').all()
+      .map((f) => {
+        const p = project(f.project_id);
+        const diff = Math.ceil((new Date(f.plan_date) - new Date(t)) / 86400000);
+        return { id: f.id, project_id: f.project_id, project_name: p ? p.name : '', title: f.name, due_date: f.plan_date, amount: f.amount, level: f.plan_date < t ? 'overdue' : diff <= 7 ? 'd7' : 'normal' };
+      });
+    res.json({ members, byPm, risks, milestones, totals: {
+      projectCount: projects.length,
+      riskCount: projects.filter((p) => p.risk === 'red').length,
+      totalAmount: Math.round(projects.reduce((s, p) => s + (p.amount || 0), 0) * 100) / 100
+    } });
+  });
+
+  // ---------------- knowledge base ----------------
+  app.get('/api/kb/categories', requireAuth, (req, res) => {
+    const flat = db.prepare('SELECT * FROM kb_categories ORDER BY sort_order, id').all();
+    const top = flat.filter((c) => !c.parent_id);
+    res.json(top.map((c) => ({ ...c, children: flat.filter((x) => x.parent_id === c.id) })));
+  });
+
+  app.post('/api/kb/categories', requireAuth, requireWrite('kb'), (req, res) => {
+    const b = req.body || {};
+    if (!b.name) return sendError(res, 400, '分类名称不能为空');
+    const r = db.prepare('INSERT INTO kb_categories(parent_id,name,sort_order) VALUES(?,?,?)')
+      .run(b.parent_id || null, b.name, Number(b.sort_order || 0));
+    res.json(db.prepare('SELECT * FROM kb_categories WHERE id = ?').get(Number(r.lastInsertRowid)));
+  });
+
+  app.put('/api/kb/categories/:id', requireAuth, requireWrite('kb'), (req, res) => {
+    const cur = db.prepare('SELECT * FROM kb_categories WHERE id = ?').get(Number(req.params.id));
+    if (!cur) return sendError(res, 404, '分类不存在');
+    const b = req.body || {};
+    db.prepare('UPDATE kb_categories SET name=?, sort_order=? WHERE id=?')
+      .run(b.name ?? cur.name, Number(b.sort_order ?? cur.sort_order), cur.id);
+    res.json(db.prepare('SELECT * FROM kb_categories WHERE id = ?').get(cur.id));
+  });
+
+  app.delete('/api/kb/categories/:id', requireAuth, requireWrite('kb'), (req, res) => {
+    const id = Number(req.params.id);
+    const children = db.prepare('SELECT id FROM kb_categories WHERE parent_id = ?').all(id);
+    for (const c of children) {
+      db.prepare('UPDATE kb_articles SET category_id = NULL WHERE category_id = ?').run(c.id);
+      db.prepare('DELETE FROM kb_categories WHERE id = ?').run(c.id);
+    }
+    db.prepare('UPDATE kb_articles SET category_id = NULL WHERE category_id = ?').run(id);
+    db.prepare('DELETE FROM kb_categories WHERE id = ?').run(id);
+    res.json({ ok: true });
+  });
+
+  app.get('/api/kb/articles', requireAuth, (req, res) => {
+    const categoryId = req.query.categoryId;
+    const q = String(req.query.q || '').trim();
+    let rows;
+    if (categoryId) {
+      const cat = db.prepare('SELECT * FROM kb_categories WHERE id = ?').get(Number(categoryId));
+      if (!cat) return res.json([]);
+      const subIds = db.prepare('SELECT id FROM kb_categories WHERE parent_id = ?').all(cat.id).map((c) => c.id);
+      const ids = [cat.id, ...subIds];
+      const placeholders = ids.map(() => '?').join(',');
+      rows = db.prepare(`SELECT * FROM kb_articles WHERE category_id IN (${placeholders}) ORDER BY updated_at DESC`).all(...ids);
+    } else {
+      rows = db.prepare('SELECT * FROM kb_articles ORDER BY updated_at DESC').all();
+    }
+    if (q) {
+      rows = rows.filter((a) => (a.title + ' ' + a.content + ' ' + a.tags).toLowerCase().includes(q.toLowerCase()));
+    }
+    res.json(rows);
+  });
+
+  app.get('/api/kb/articles/:id', requireAuth, (req, res) => {
+    const a = db.prepare('SELECT * FROM kb_articles WHERE id = ?').get(Number(req.params.id));
+    if (!a) return sendError(res, 404, '文章不存在');
+    res.json(a);
+  });
+
+  app.post('/api/kb/articles', requireAuth, requireWrite('kb'), (req, res) => {
+    const b = req.body || {};
+    if (!b.title) return sendError(res, 400, '标题不能为空');
+    const r = db.prepare('INSERT INTO kb_articles(category_id,title,content,tags,author,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
+      .run(b.category_id || null, b.title, b.content || '', b.tags || '', req.user ? req.user.name : '', now(), now());
+    res.json(db.prepare('SELECT * FROM kb_articles WHERE id = ?').get(Number(r.lastInsertRowid)));
+  });
+
+  app.put('/api/kb/articles/:id', requireAuth, requireWrite('kb'), (req, res) => {
+    const cur = db.prepare('SELECT * FROM kb_articles WHERE id = ?').get(Number(req.params.id));
+    if (!cur) return sendError(res, 404, '文章不存在');
+    const b = req.body || {};
+    db.prepare('UPDATE kb_articles SET category_id=?, title=?, content=?, tags=?, updated_at=? WHERE id=?')
+      .run(b.category_id ?? cur.category_id, b.title ?? cur.title, b.content ?? cur.content, b.tags ?? cur.tags, now(), cur.id);
+    res.json(db.prepare('SELECT * FROM kb_articles WHERE id = ?').get(cur.id));
+  });
+
+  app.delete('/api/kb/articles/:id', requireAuth, requireWrite('kb'), (req, res) => {
+    db.prepare('DELETE FROM kb_articles WHERE id = ?').run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ---------------- template management ----------------
+  app.get('/api/templates', requireAuth, (req, res) => {
+    const type = req.query.type;
+    let rows;
+    if (type) rows = db.prepare('SELECT * FROM templates WHERE type = ? ORDER BY updated_at DESC').all(type);
+    else rows = db.prepare('SELECT * FROM templates ORDER BY type, updated_at DESC').all();
+    res.json(rows);
+  });
+
+  app.post('/api/templates', requireAuth, requireWrite('template'), upload.single('file'), (req, res) => {
+    const b = req.body || {};
+    if (!b.name) return sendError(res, 400, '模板名称不能为空');
+    let fileName = null, pathValue = null;
+    if (req.file) {
+      fileName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+      pathValue = req.file.filename;
+    }
+    const r = db.prepare('INSERT INTO templates(type,name,description,file_name,path,version,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)')
+      .run(b.type || 'doc', b.name, b.description || '', fileName, pathValue, now(), now());
+    res.json(db.prepare('SELECT * FROM templates WHERE id = ?').get(Number(r.lastInsertRowid)));
+  });
+
+  app.put('/api/templates/:id', requireAuth, requireWrite('template'), upload.single('file'), (req, res) => {
+    const cur = db.prepare('SELECT * FROM templates WHERE id = ?').get(Number(req.params.id));
+    if (!cur) return sendError(res, 404, '模板不存在');
+    const b = req.body || {};
+    let fileName = cur.file_name, pathValue = cur.path, version = cur.version;
+    if (req.file) {
+      if (cur.path) {
+        const old = path.join(UPLOAD_DIR, cur.path);
+        if (fs.existsSync(old)) fs.unlinkSync(old);
+      }
+      fileName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+      pathValue = req.file.filename;
+      version = (cur.version || 0) + 1;
+    }
+    db.prepare('UPDATE templates SET type=?, name=?, description=?, file_name=?, path=?, version=?, updated_at=? WHERE id=?')
+      .run(b.type ?? cur.type, b.name ?? cur.name, b.description ?? cur.description, fileName, pathValue, version, now(), cur.id);
+    res.json(db.prepare('SELECT * FROM templates WHERE id = ?').get(cur.id));
+  });
+
+  app.delete('/api/templates/:id', requireAuth, requireWrite('template'), (req, res) => {
+    const cur = db.prepare('SELECT * FROM templates WHERE id = ?').get(Number(req.params.id));
+    if (cur && cur.path) {
+      const p = path.join(UPLOAD_DIR, cur.path);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+    db.prepare('DELETE FROM templates WHERE id = ?').run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.get('/api/templates/:id/download', requireAuth, (req, res) => {
+    const cur = db.prepare('SELECT * FROM templates WHERE id = ?').get(Number(req.params.id));
+    if (!cur || !cur.path) return sendError(res, 404, '模板文件不存在');
+    const p = path.join(UPLOAD_DIR, cur.path);
+    if (!fs.existsSync(p)) return sendError(res, 404, '模板文件已丢失');
+    res.download(p, cur.file_name);
   });
 
   // ---------------- AI config ----------------

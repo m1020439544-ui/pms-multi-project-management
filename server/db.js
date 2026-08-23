@@ -218,6 +218,38 @@ CREATE TABLE IF NOT EXISTS app_state (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS kb_categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  parent_id INTEGER,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS kb_articles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category_id INTEGER,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  tags TEXT NOT NULL DEFAULT '',
+  author TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY(category_id) REFERENCES kb_categories(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL DEFAULT 'doc',
+  name TEXT NOT NULL,
+  description TEXT,
+  file_name TEXT,
+  path TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 `);
 
 function ensureColumns(table, columns) {
@@ -251,6 +283,15 @@ ensureColumns('projects', {
   backward_unit_name: 'backward_unit_name TEXT',
   backward_contract_amount: 'backward_contract_amount REAL NOT NULL DEFAULT 0',
   backward_sign_date: 'backward_sign_date TEXT'
+});
+
+ensureColumns('menu_config', {
+  roles: "roles TEXT NOT NULL DEFAULT '[\"admin\",\"viewer\"]'"
+});
+
+ensureColumns('sub_contracts', {
+  code: 'code TEXT',
+  sign_date: 'sign_date TEXT'
 });
 
 // ---------------- encryption helpers ----------------
@@ -446,6 +487,85 @@ function seed() {
     for (const row of rows) {
       seedDocFolders(row.id);
     }
+  }
+
+  ensureDefaultMenu();
+  seedKnowledgeBase();
+  seedTemplates();
+}
+
+function ensureDefaultMenu() {
+  const defaults = [
+    { key: 'overview', name: '总览', display: '总览', href: '#/overview', remark: '项目组合看板与统计', sort_order: 1, visible: 1, roles: '["admin","viewer"]' },
+    { key: 'project', name: '项目', display: '项目', href: '#/projects', remark: '项目全生命周期管理', sort_order: 2, visible: 1, roles: '["admin","viewer"]' },
+    { key: 'contracts', name: '合同管理', display: '合同管理', href: '#/contracts', remark: '前向/后向合同台账与付款计划', sort_order: 3, visible: 1, roles: '["admin","viewer"]' },
+    { key: 'docs', name: '文档', display: '文档', href: '#/documents', remark: '文档中心与标准化模板', sort_order: 4, visible: 1, roles: '["admin","viewer"]' },
+    { key: 'templates', name: '模板管理', display: '模板管理', href: '#/templates', remark: '文档/项目/合同模板与版本管理', sort_order: 5, visible: 1, roles: '["admin","viewer"]' },
+    { key: 'pmo', name: 'PMO管理', display: 'PMO管理', href: '#/pmo', remark: '项目管理办公室工作台与成员', sort_order: 6, visible: 1, roles: '["admin"]' },
+    { key: 'kb', name: '知识库', display: '知识库', href: '#/kb', remark: '项目管理知识库与 AI 问答', sort_order: 7, visible: 1, roles: '["admin","viewer"]' },
+    { key: 'remind', name: '提醒', display: '提醒', href: '#/reminders', remark: '回款 / 里程碑 / 风险提醒', sort_order: 8, visible: 1, roles: '["admin","viewer"]' },
+    { key: 'ai', name: 'AI 配置', display: 'AI 配置', href: '#/ai-config', remark: '大模型接入与能力管理', sort_order: 9, visible: 1, roles: '["admin"]' },
+    { key: 'settings', name: '设置', display: '设置', href: '#/settings', remark: '菜单自定义与系统配置', sort_order: 10, visible: 1, roles: '["admin"]' },
+    { key: 'projects', name: '项目选择', display: '项目选择', href: '#/projects', remark: '项目列表与工作区入口', sort_order: 1, visible: 1, roles: '["admin","viewer"]', parent_key: 'project' },
+    { key: 'project-detail', name: '项目信息表', display: '项目信息表', href: '#/project-detail', remark: '基本信息与前后向资金', sort_order: 2, visible: 1, roles: '["admin","viewer"]', parent_key: 'project' },
+    { key: 'project-stages', name: '三阶段流程', display: '三阶段流程', href: '#/project-stages', remark: '启动 / 实施 / 收尾', sort_order: 3, visible: 1, roles: '["admin","viewer"]', parent_key: 'project' }
+  ];
+  const insert = db.prepare('INSERT INTO menu_config(parent_id,key,name,display,href,remark,sort_order,visible,roles) VALUES(?,?,?,?,?,?,?,?,?)');
+  const keyToId = new Map(db.prepare('SELECT key, id FROM menu_config').all().map((r) => [r.key, r.id]));
+  for (const d of defaults.filter((d) => !d.parent_key)) {
+    if (!keyToId.has(d.key)) {
+      const r = insert.run(null, d.key, d.name, d.display, d.href, d.remark, d.sort_order, d.visible, d.roles);
+      keyToId.set(d.key, Number(r.lastInsertRowid));
+    }
+  }
+  for (const d of defaults.filter((d) => d.parent_key)) {
+    if (!keyToId.has(d.key)) {
+      const r = insert.run(keyToId.get(d.parent_key) || null, d.key, d.name, d.display, d.href, d.remark, d.sort_order, d.visible, d.roles);
+      keyToId.set(d.key, Number(r.lastInsertRowid));
+    }
+  }
+  // 一次性迁移：将默认菜单调整到推荐顺序（仅执行一次，之后尊重用户在系统设置中的自定义排序）
+  const migrated = db.prepare("SELECT value FROM app_state WHERE key = 'menu_v2_sort_migrated'").get();
+  if (!migrated) {
+    const upd = db.prepare('UPDATE menu_config SET sort_order = ?, roles = ? WHERE key = ?');
+    for (const d of defaults) upd.run(d.sort_order, d.roles, d.key);
+    db.prepare("INSERT INTO app_state(key,value) VALUES('menu_v2_sort_migrated','1')").run();
+  }
+}
+
+function seedKnowledgeBase() {
+  const catCount = db.prepare('SELECT COUNT(*) AS c FROM kb_categories').get().c;
+  if (catCount === 0) {
+    const ins = db.prepare('INSERT INTO kb_categories(parent_id,name,sort_order) VALUES(?,?,?)');
+    const r1 = ins.run(null, '项目管理规范', 0);
+    const r2 = ins.run(null, '项目经验沉淀', 1);
+    const r3 = ins.run(null, '案例库', 2);
+    ins.run(Number(r1.lastInsertRowid), '售中流程规范', 0);
+    ins.run(Number(r1.lastInsertRowid), '交付验收标准', 1);
+    ins.run(Number(r2.lastInsertRowid), '优秀实践', 0);
+    ins.run(Number(r2.lastInsertRowid), '复盘与教训', 1);
+    ins.run(Number(r3.lastInsertRowid), '智能化项目案例', 0);
+    ins.run(Number(r3.lastInsertRowid), '运营商项目案例', 1);
+  }
+  const articleCount = db.prepare('SELECT COUNT(*) AS c FROM kb_articles').get().c;
+  if (articleCount === 0) {
+    const cat = db.prepare('SELECT id FROM kb_categories ORDER BY id LIMIT 1').get();
+    db.prepare('INSERT INTO kb_articles(category_id,title,content,tags,author) VALUES(?,?,?,?,?)')
+      .run(cat ? cat.id : null, '售中项目管理要点', '按启动、实施、收尾三阶段管控；回款台账与里程碑绑定跟踪；风险分级处置。', '规范,售中', 'PMO');
+    db.prepare('INSERT INTO kb_articles(category_id,title,content,tags,author) VALUES(?,?,?,?,?)')
+      .run(cat ? cat.id : null, '终验注意事项', '终验前完成资料归档、问题闭环与客户确认，终验款与验收单联动。', '验收,经验', 'PMO');
+  }
+}
+
+function seedTemplates() {
+  const count = db.prepare('SELECT COUNT(*) AS c FROM templates').get().c;
+  if (count === 0) {
+    const ins = db.prepare('INSERT INTO templates(type,name,description,version) VALUES(?,?,?,1)');
+    ins.run('doc', '项目信息表模板', '江苏省智能化项目规范 · 项目信息表');
+    ins.run('doc', '项目周报模板', '项目周报标准格式');
+    ins.run('doc', '验收报告模板', '终验报告标准格式');
+    ins.run('project', '项目立项模板', '项目立项申请与审批要素');
+    ins.run('contract', '合同评审模板', '前向/后向合同风险评审清单');
   }
 }
 

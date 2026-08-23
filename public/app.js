@@ -216,7 +216,11 @@
       projects: 'projects',
       'project-detail': 'project-detail',
       'project-stages': 'project-stages',
+      contracts: 'contracts',
       documents: 'docs',
+      templates: 'templates',
+      pmo: 'pmo',
+      kb: 'kb',
       reminders: 'remind',
       'ai-config': 'ai',
       settings: 'settings'
@@ -279,7 +283,11 @@
     projects: renderProjects,
     'project-detail': renderProjectDetail,
     'project-stages': renderProjectStages,
+    contracts: renderContracts,
     documents: renderDocuments,
+    templates: renderTemplates,
+    pmo: renderPmo,
+    kb: renderKnowledge,
     reminders: renderReminders,
     'ai-config': renderAiConfig,
     settings: renderSettings
@@ -468,6 +476,7 @@
     appShell(`
       ${viewTitle('项目选择', '项目全生命周期管理，点击“选为当前项目”进入工作区', `
         <button class="btn" data-action="toggle-project-view" title="切换显示方式">${window._projectView === 'table' ? svg('check') + ' 卡片视图' : svg('doc') + ' 表格视图'}</button>
+        ${canWrite('project') ? `<button class="btn" data-action="project-import">${svg('plus')} 批量导入项目</button>` : ''}
         ${canWrite('project') ? `<button class="btn primary" data-action="new-project">${svg('plus')} 新建项目</button>` : ''}`)}
       ${window._projectView === 'table' ? projectTableHtml(projects) : `<div class="project-grid">
         ${projects.map((p) => {
@@ -528,6 +537,37 @@
   async function handleNewProject() {
     openModal('新建项目', projectFormHtml(null),
       modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-project-btn' }]));
+  }
+
+  function handleProjectImport() {
+    openModal('批量导入项目', `
+      <p class="small muted mb16">请先下载 Excel 模板并按列填写，支持一次导入多个项目；项目编号重复的行将自动跳过。</p>
+      <div class="row mb16">
+        <button class="btn sm" data-action="download" data-url="/api/project-import-template" data-name="pms-project-import-template.xlsx">${svg('doc')} 下载导入模板</button>
+      </div>
+      <input class="input" type="file" id="project-import-file" accept=".xlsx">
+      <div id="import-result" class="mt16"></div>`,
+      modalButtons([{ label: '关闭', action: 'modal-close' }]));
+  }
+
+  async function doProjectImport(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    const box = document.getElementById('import-result');
+    if (box) box.innerHTML = '<div class="muted">导入中…</div>';
+    try {
+      const res = await fetch('/api/projects/import', { method: 'POST', headers: { 'Authorization': 'Bearer ' + localStorage.getItem(LS_TOKEN) }, body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '导入失败');
+      box.innerHTML = `
+        <div class="row"><span class="tag green">成功 ${data.success} 条</span><span class="tag red">失败 ${data.failed.length} 条</span></div>
+        ${data.failed.length ? `<div class="mt8">${data.failed.map(f=>`<div class="small" style="color:var(--risk-red)">第 ${f.row} 行：${esc(f.reason)}</div>`).join('')}</div>` : ''}`;
+      toast('导入完成');
+      await renderProjects();
+    } catch (e) {
+      if (box) box.innerHTML = `<div class="small" style="color:var(--risk-red)">${esc(e.message)}</div>`;
+      toast(e.message, true);
+    }
   }
 
   async function saveProject(form) {
@@ -1340,6 +1380,470 @@
       <div class="ai-disclaimer">${esc(res.disclaimer || 'AI 生成内容请人工复核')}</div>`;
   }
 
+  // ---------------- contract management ----------------
+  async function renderContracts() {
+    const tab = window._contractTab || 'all';
+    const [contracts, plans] = await Promise.all([api('/api/contracts'), api('/api/contracts/plans')]);
+    appShell(`
+      ${viewTitle('合同管理', '前向 / 后向合同统一台账，付款计划与资金台账联动', canWrite('contract') ? `<button class="btn primary" data-action="new-back-contract">${svg('plus')} 新增后向合同</button>` : '')}
+      <div class="tabs">
+        ${[['all','全部合同'],['forward','前向合同'],['backward','后向合同'],['plans','付款计划']].map(([k,label])=>`<button class="tab ${tab===k?'active':''}" data-action="contract-tab" data-tab="${k}">${label}</button>`).join('')}
+      </div>
+      <div id="contract-body"></div>`);
+    const body = document.getElementById('contract-body');
+    if (tab === 'plans') {
+      body.innerHTML = `<div class="card table-wrap"><table class="table">
+        <thead><tr><th>方向</th><th>款项名称</th><th>关联项目</th><th class="num">金额(万)</th><th>计划日期</th><th>实收/付日期</th><th>状态</th></tr></thead>
+        <tbody>${plans.map(r=>{ const st=statusInfo(r.status); return `<tr>
+          <td><span class="tag ${r.direction==='forward'?'primary':'amount'}">${r.direction==='forward'?'前向回款':'后向支付'}</span></td>
+          <td>${esc(r.name)}</td><td>${esc(r.project_name||'')}</td>
+          <td class="num amount">${num(r.amount)}</td><td>${esc(r.plan_date||'')}</td><td>${esc(r.recv_date||'')}</td>
+          <td><span class="tag ${st.cls}">${st.txt}</span></td></tr>`; }).join('')}</tbody>
+      </table></div>`;
+      return;
+    }
+    const list = tab === 'all' ? contracts : contracts.filter((c) => c.direction === tab);
+    body.innerHTML = `<div class="card table-wrap"><table class="table">
+      <thead><tr><th>方向</th><th>合同编码</th><th>合同名称</th><th>对方</th><th class="num">金额(万)</th><th>签约时间</th><th>关联项目</th>${canWrite('contract')?'<th></th>':''}</tr></thead>
+      <tbody>${list.map(c=>`
+        <tr>
+          <td><span class="tag ${c.direction==='forward'?'primary':'amount'}">${c.direction==='forward'?'前向':'后向'}</span></td>
+          <td>${esc(c.code||'')}</td><td><b>${esc(c.name)}</b></td><td>${esc(c.partner||'')}</td>
+          <td class="num amount">${num(c.amount)}</td><td>${esc(c.sign_date||'')}</td><td>${esc(c.project_name||'')}</td>
+          ${canWrite('contract') ? `<td class="actions">${c.direction==='backward'
+            ? `${iconBtn('edit-back-contract:' + c.rawId, 'edit', '编辑')}${iconBtn('delete-back-contract:' + c.rawId, 'trash', '删除', 'danger')}`
+            : iconBtn('edit-front-contract:' + c.project_id, 'edit', '编辑前向合同')}</td>` : ''}
+        </tr>`).join('')}</tbody>
+    </table></div>`;
+  }
+
+  async function handleNewBackContract() {
+    const projects = await api('/api/projects');
+    openModal('新增后向合同', `
+      <form data-submit="save-back-contract">
+        <div class="form-grid">
+          <div class="field"><label>关联项目 *</label><select class="input" name="project_id">${projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></div>
+          <div class="field"><label>合同编码</label><input class="input" name="code"></div>
+          <div class="field full"><label>合同名称 *</label><input class="input" name="name"></div>
+          <div class="field"><label>后向单位名称</label><input class="input" name="supplier"></div>
+          <div class="field"><label>可签约金额(万)</label><input class="input" type="number" step="0.01" name="signable" value="0"></div>
+          <div class="field"><label>已签约金额(万)</label><input class="input" type="number" step="0.01" name="signed" value="0"></div>
+          <div class="field"><label>已支付金额(万)</label><input class="input" type="number" step="0.01" name="paid" value="0"></div>
+          <div class="field"><label>签约时间</label><input class="input" type="date" name="sign_date"></div>
+        </div>
+      </form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-back-contract-btn' }]));
+  }
+
+  async function saveBackContract(form) {
+    try {
+      await api('/api/contracts/backward', { method: 'POST', body: JSON.stringify(readForm(form)) });
+      toast('后向合同已保存');
+      closeModal();
+      await renderContracts();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleEditBackContract(id) {
+    const projects = await api('/api/projects');
+    const list = await api('/api/contracts?direction=backward');
+    const c = list.find((x) => String(x.rawId) === String(id));
+    if (!c) return toast('合同不存在', true);
+    openModal('编辑后向合同', `
+      <form data-submit="update-back-contract" data-id="${id}">
+        <div class="form-grid">
+          <div class="field"><label>关联项目</label><select class="input" name="project_id" disabled>${projects.map(p=>`<option value="${esc(p.id)}" ${p.id===c.project_id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
+          <div class="field"><label>合同编码</label><input class="input" name="code" value="${esc(c.code||'')}"></div>
+          <div class="field full"><label>合同名称 *</label><input class="input" name="name" value="${esc(c.name)}"></div>
+          <div class="field"><label>后向单位名称</label><input class="input" name="supplier" value="${esc(c.partner||'')}"></div>
+          <div class="field"><label>可签约金额(万)</label><input class="input" type="number" step="0.01" name="signable" value="${c.amount}"></div>
+          <div class="field"><label>已签约金额(万)</label><input class="input" type="number" step="0.01" name="signed" value="${c.signed||0}"></div>
+          <div class="field"><label>已支付金额(万)</label><input class="input" type="number" step="0.01" name="paid" value="${c.paid||0}"></div>
+          <div class="field"><label>签约时间</label><input class="input" type="date" name="sign_date" value="${esc(c.sign_date||'')}"></div>
+        </div>
+      </form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-back-contract-btn' }]));
+  }
+
+  async function updateBackContract(form, id) {
+    try {
+      await api('/api/contracts/backward/' + id, { method: 'PUT', body: JSON.stringify(readForm(form)) });
+      toast('后向合同已更新');
+      closeModal();
+      await renderContracts();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleDeleteBackContract(id) {
+    openModal('删除确认', '<p>确认删除该后向合同吗？</p>',
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认删除', cls: 'danger', action: 'confirm-delete-back-contract', id: 'del-back-contract-btn' }]),
+      () => { window._delBackContractId = id; });
+  }
+
+  async function confirmDeleteBackContract() {
+    try {
+      await api('/api/contracts/backward/' + window._delBackContractId, { method: 'DELETE' });
+      toast('已删除');
+      closeModal();
+      await renderContracts();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleEditFrontContract(projectId) {
+    const list = await api('/api/contracts?direction=forward');
+    const c = list.find((x) => x.project_id === projectId);
+    if (!c) return toast('前向合同不存在', true);
+    const p = await api('/api/projects/' + projectId);
+    openModal('编辑前向合同', `
+      <form data-submit="update-front-contract" data-id="${esc(projectId)}">
+        <div class="form-grid">
+          <div class="field"><label>前向合同编码</label><input class="input" name="forward_contract_code" value="${esc(p.forward_contract_code||'')}"></div>
+          <div class="field"><label>前向合同名称</label><input class="input" name="forward_contract_name" value="${esc(p.forward_contract_name||'')}"></div>
+          <div class="field"><label>前向签约金额(万)</label><input class="input" type="number" step="0.01" name="forward_contract_amount" value="${p.forward_contract_amount||0}"></div>
+          <div class="field"><label>前向签约时间</label><input class="input" type="date" name="forward_sign_date" value="${esc(p.forward_sign_date||'')}"></div>
+        </div>
+      </form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-front-contract-btn' }]));
+  }
+
+  async function updateFrontContract(form, projectId) {
+    try {
+      await api('/api/contracts/forward/' + projectId, { method: 'PUT', body: JSON.stringify(readForm(form)) });
+      toast('前向合同已更新');
+      closeModal();
+      await renderContracts();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  // ---------------- template management ----------------
+  async function renderTemplates() {
+    const type = window._templateType || 'doc';
+    const list = await api('/api/templates?type=' + type);
+    appShell(`
+      ${viewTitle('模板管理', '文档 / 项目 / 合同模板统一管理与版本控制', canWrite('template') ? `<button class="btn primary" data-action="new-template">${svg('plus')} 新增模板</button>` : '')}
+      <div class="tabs">
+        ${[['doc','文档模板'],['project','项目模板'],['contract','合同模板']].map(([k,label])=>`<button class="tab ${type===k?'active':''}" data-action="template-tab" data-tab="${k}">${label}</button>`).join('')}
+      </div>
+      <div class="card table-wrap"><table class="table">
+        <thead><tr><th>模板名称</th><th>说明</th><th>版本</th><th>文件</th><th>更新时间</th>${canWrite('template')?'<th></th>':''}</tr></thead>
+        <tbody>${list.map(t=>`
+          <tr><td><b>${esc(t.name)}</b></td><td class="muted">${esc(t.description||'')}</td>
+          <td><span class="tag primary">V${t.version||1}</span></td>
+          <td>${t.path ? `<a href="javascript:;" data-action="download" data-url="/api/templates/${t.id}/download" data-name="${esc(t.file_name||t.name)}">${esc(t.file_name||'')}</a>` : '<span class="muted">未上传文件</span>'}</td>
+          <td class="small muted">${esc(t.updated_at||'')}</td>
+          ${canWrite('template') ? `<td class="actions">${iconBtn('edit-template:' + t.id, 'edit', '编辑')}${iconBtn('delete-template:' + t.id, 'trash', '删除', 'danger')}</td>` : ''}
+          </tr>`).join('')}
+        </tbody>
+      </table></div>`);
+  }
+
+  async function handleNewTemplate() {
+    openModal('新增模板', templateFormHtml(null),
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-template-btn' }]));
+  }
+
+  function templateFormHtml(t) {
+    const v = t || {};
+    return `
+      <form data-submit="${t ? 'update-template' : 'save-template'}" ${t ? `data-id="${esc(t.id)}"` : ''}>
+        <div class="form-grid">
+          <div class="field"><label>模板类型</label><select class="input" name="type">
+            <option value="doc" ${v.type==='doc'?'selected':''}>文档模板</option>
+            <option value="project" ${v.type==='project'?'selected':''}>项目模板</option>
+            <option value="contract" ${v.type==='contract'?'selected':''}>合同模板</option>
+          </select></div>
+          <div class="field"><label>模板名称 *</label><input class="input" name="name" value="${esc(v.name||'')}"></div>
+          <div class="field full"><label>说明</label><input class="input" name="description" value="${esc(v.description||'')}"></div>
+          <div class="field full"><label>上传模板文件${t ? '（替换后版本号 +1）' : ''}</label><input class="input" type="file" name="file"></div>
+        </div>
+      </form>`;
+  }
+
+  async function saveTemplate(form) {
+    try {
+      const fd = new FormData(form);
+      const res = await fetch('/api/templates', { method: 'POST', headers: { 'Authorization': 'Bearer ' + localStorage.getItem(LS_TOKEN) }, body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '保存失败');
+      toast('模板已保存');
+      closeModal();
+      await renderTemplates();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleEditTemplate(id) {
+    const list = await api('/api/templates?type=' + (window._templateType || 'doc'));
+    const t = list.find((x) => String(x.id) === String(id));
+    if (!t) return toast('模板不存在', true);
+    openModal('编辑模板', templateFormHtml(t),
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-template-btn' }]));
+  }
+
+  async function updateTemplate(form, id) {
+    try {
+      const fd = new FormData(form);
+      const res = await fetch('/api/templates/' + id, { method: 'PUT', headers: { 'Authorization': 'Bearer ' + localStorage.getItem(LS_TOKEN) }, body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '保存失败');
+      toast('模板已更新');
+      closeModal();
+      await renderTemplates();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleDeleteTemplate(id) {
+    openModal('删除确认', '<p>确认删除该模板吗？</p>',
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认删除', cls: 'danger', action: 'confirm-delete-template', id: 'del-template-btn' }]),
+      () => { window._delTemplateId = id; });
+  }
+
+  async function confirmDeleteTemplate() {
+    try {
+      await api('/api/templates/' + window._delTemplateId, { method: 'DELETE' });
+      toast('已删除');
+      closeModal();
+      await renderTemplates();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  // ---------------- PMO management ----------------
+  async function renderPmo() {
+    const data = await api('/api/pmo/summary');
+    appShell(`
+      ${viewTitle('PMO 管理', '项目管理办公室：组合健康度、成员与里程碑跟踪（信息管理，不含审批流）')}
+      <div class="grid stat-grid mb16">
+        ${statCard('在管项目', num(data.totals.projectCount), '个', '全量项目')}
+        ${statCard('高风险项目', num(data.totals.riskCount), '个', '需重点跟踪')}
+        ${statCard('合同总额', num(data.totals.totalAmount), '万', '')}
+        ${statCard('PMO 成员', num(data.members.length), '人', '')}
+      </div>
+      <div class="split">
+        <div class="card card-pad">
+          <h3 style="margin:0 0 12px;font-size:15px">按 PM 汇总</h3>
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>PM</th><th class="num">项目数</th><th class="num">风险项目</th><th class="num">合同总额(万)</th><th class="num">平均回款率</th></tr></thead>
+            <tbody>${data.byPm.map(x=>`<tr><td><b>${esc(x.pm)}</b></td><td class="num">${x.count}</td><td class="num" style="color:${x.riskCount?'var(--risk-red)':'inherit'}">${x.riskCount}</td><td class="num">${num(x.totalAmount)}</td><td class="num">${num(x.avgRatio)}%</td></tr>`).join('')}</tbody>
+          </table></div>
+        </div>
+        <div class="card card-pad">
+          <h3 style="margin:0 0 12px;font-size:15px">成员</h3>
+          ${data.members.map(m=>`<div class="row" style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="avatar">${esc(m.name.slice(0,1))}</div><div class="flex1"><b>${esc(m.name)}</b><div class="small muted">${esc(m.username)}</div></div><span class="tag ${m.role==='admin'?'primary':'gray'}">${m.role==='admin'?'管理员':'只读'}</span></div>`).join('')}
+        </div>
+      </div>
+      <div class="card card-pad mt16">
+        <h3 style="margin:0 0 12px;font-size:15px">风险与里程碑</h3>
+        <div class="grid" style="grid-template-columns:1fr 1fr">
+          <div>${data.risks.length ? data.risks.map(r=>`<div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><span>${esc(r.name)}</span><span class="tag ${r.risk==='red'?'red':'yellow'}">${riskInfo(r.risk).txt}</span></div>`).join('') : '<div class="empty">暂无风险项目</div>'}</div>
+          <div>${data.milestones.length ? data.milestones.map(m=>`<div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><div><b>${esc(m.title)}</b><div class="small muted">${esc(m.project_name)} · ${esc(m.due_date)}</div></div><span class="tag ${m.level==='overdue'?'red':m.level==='d7'?'yellow':'gray'}">${m.level==='overdue'?'逾期':m.level==='d7'?'临近':'正常'}</span></div>`).join('') : '<div class="empty">暂无临近里程碑</div>'}</div>
+        </div>
+      </div>`);
+  }
+
+  // ---------------- knowledge base ----------------
+  async function renderKnowledge() {
+    const categories = await api('/api/kb/categories');
+    window._kbCategories = categories;
+    appShell(`
+      ${viewTitle('知识库', '项目管理规范、经验与案例沉淀，支持检索与 AI 问答', canWrite('kb') ? `<button class="btn primary" data-action="new-kb-article">${svg('plus')} 新建知识文章</button>` : '')}
+      <div class="grid" style="grid-template-columns:260px 1fr">
+        <div class="card card-pad">
+          <div class="space-between mb16"><h3 style="margin:0;font-size:15px">知识分类</h3>
+            ${canWrite('kb') ? `<button class="btn sm" data-action="new-kb-category">${svg('plus')}</button>` : ''}</div>
+          <div class="tree" id="kb-tree"></div>
+        </div>
+        <div class="card card-pad">
+          <div class="row mb16">
+            <input class="input flex1" id="kb-search" placeholder="搜索标题 / 内容 / 标签…">
+            <button class="btn" data-action="kb-search">搜索</button>
+          </div>
+          <div id="kb-list"></div>
+        </div>
+      </div>
+      <div class="card card-pad mt16">
+        <h3 style="margin:0 0 12px;font-size:15px">AI 知识库问答</h3>
+        <div class="row"><input class="input flex1" id="kb-question" placeholder="输入问题，AI 将基于归档文档回答…"><button class="btn primary" data-action="kb-ask">提问</button></div>
+        <div id="kb-answer" class="mt16"></div>
+      </div>`);
+    const tree = document.getElementById('kb-tree');
+    tree.innerHTML = kbTreeHtml(categories, 0);
+    await loadKbArticles('');
+  }
+
+  function kbTreeHtml(categories, depth) {
+    return categories.map(c=>`
+      <div>
+        <div class="node ${window._kbActiveCat === c.id ? 'active' : ''}" data-action="select-kb-category" data-id="${c.id}" style="padding-left:${8+depth*14}px">
+          ${svg('folder')}<span class="flex1" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</span>
+          <span class="row-actions">${canWrite('kb') ? `${iconBtn('edit-kb-category:' + c.id, 'edit', '重命名')}${iconBtn('delete-kb-category:' + c.id, 'trash', '删除', 'danger')}` : ''}</span>
+        </div>
+        ${c.children && c.children.length ? `<div class="children">${kbTreeHtml(c.children, depth+1)}</div>` : ''}
+      </div>`).join('');
+  }
+
+  async function selectKbCategory(id) {
+    window._kbActiveCat = id;
+    const tree = document.getElementById('kb-tree');
+    if (tree) tree.querySelectorAll('.node').forEach(n=>n.classList.toggle('active', Number(n.dataset.id)===Number(id)));
+    await loadKbArticles('', id);
+  }
+
+  async function loadKbArticles(q, categoryId) {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (categoryId) params.set('categoryId', categoryId);
+    const list = await api('/api/kb/articles?' + params.toString());
+    const el = document.getElementById('kb-list');
+    el.innerHTML = list.length ? list.map(a=>`
+      <div class="row" style="justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)">
+        <div class="flex1" style="min-width:0">
+          <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.title)}</div>
+          <div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.tags||'')} · ${esc(a.author||'')} · ${esc(a.updated_at||'')}</div>
+        </div>
+        <div class="row">${iconBtn('view-kb-article:' + a.id, 'doc', '查看')}${canWrite('kb') ? `${iconBtn('edit-kb-article:' + a.id, 'edit', '编辑')}${iconBtn('delete-kb-article:' + a.id, 'trash', '删除', 'danger')}` : ''}</div>
+      </div>`).join('') : '<div class="empty">暂无知识文章</div>';
+  }
+
+  async function handleKbSearch() {
+    const q = document.getElementById('kb-search').value.trim();
+    await loadKbArticles(q, window._kbActiveCat || undefined);
+  }
+
+  async function handleNewKbCategory() {
+    openModal('新建知识分类', `
+      <form data-submit="save-kb-category">
+        <div class="field"><label>分类名称 *</label><input class="input" name="name"></div>
+        <div class="field"><label>上级分类</label><select class="input" name="parent_id"><option value="">（顶级）</option>${(window._kbCategories||[]).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+      </form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-kb-category-btn' }]));
+  }
+
+  async function saveKbCategory(form) {
+    try {
+      await api('/api/kb/categories', { method: 'POST', body: JSON.stringify(readForm(form)) });
+      toast('分类已创建');
+      closeModal();
+      await renderKnowledge();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleEditKbCategory(id) {
+    const cat = findKbCategory(window._kbCategories || [], id);
+    if (!cat) return;
+    openModal('重命名分类', `
+      <form data-submit="update-kb-category" data-id="${id}"><div class="field"><label>分类名称</label><input class="input" name="name" value="${esc(cat.name)}"></div></form>`,
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-kb-category-btn' }]));
+  }
+
+  async function updateKbCategory(form, id) {
+    try {
+      await api('/api/kb/categories/' + id, { method: 'PUT', body: JSON.stringify(readForm(form)) });
+      toast('分类已更新');
+      closeModal();
+      await renderKnowledge();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleDeleteKbCategory(id) {
+    openModal('删除确认', '<p>确认删除该分类吗？其下文章将变为未分类。</p>',
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认删除', cls: 'danger', action: 'confirm-delete-kb-category', id: 'del-kb-category-btn' }]),
+      () => { window._delKbCategoryId = id; });
+  }
+
+  async function confirmDeleteKbCategory() {
+    try {
+      await api('/api/kb/categories/' + window._delKbCategoryId, { method: 'DELETE' });
+      toast('已删除');
+      closeModal();
+      await renderKnowledge();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function findKbCategory(categories, id) {
+    for (const c of categories) {
+      if (Number(c.id) === Number(id)) return c;
+      const found = findKbCategory(c.children || [], id);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function kbArticleFormHtml(a) {
+    const v = a || {};
+    const cats = window._kbCategories || [];
+    const options = cats.flatMap(c=>[`<option value="${c.id}" ${v.category_id===c.id?'selected':''}>${esc(c.name)}</option>`].concat((c.children||[]).map(x=>`<option value="${x.id}" ${v.category_id===x.id?'selected':''}>　↳ ${esc(x.name)}</option>`))).join('');
+    return `
+      <form data-submit="${a ? 'update-kb-article' : 'save-kb-article'}" ${a ? `data-id="${esc(a.id)}"` : ''}>
+        <div class="form-grid">
+          <div class="field"><label>标题 *</label><input class="input" name="title" value="${esc(v.title||'')}"></div>
+          <div class="field"><label>分类</label><select class="input" name="category_id"><option value="">未分类</option>${options}</select></div>
+          <div class="field full"><label>标签（逗号分隔）</label><input class="input" name="tags" value="${esc(v.tags||'')}"></div>
+          <div class="field full"><label>内容</label><textarea class="input" name="content" rows="10">${esc(v.content||'')}</textarea></div>
+        </div>
+      </form>`;
+  }
+
+  async function handleNewKbArticle() {
+    openModal('新建知识文章', kbArticleFormHtml(null),
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-kb-article-btn' }]));
+  }
+
+  async function saveKbArticle(form) {
+    try {
+      await api('/api/kb/articles', { method: 'POST', body: JSON.stringify(readForm(form)) });
+      toast('文章已保存');
+      closeModal();
+      await renderKnowledge();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleViewKbArticle(id) {
+    const a = await api('/api/kb/articles/' + id);
+    openModal(a.title, `
+      <div class="small muted mb16">${esc(a.tags||'')} · ${esc(a.author||'')} · ${esc(a.updated_at||'')}</div>
+      <div style="white-space:pre-wrap;line-height:1.8">${esc(a.content||'')}</div>`, modalButtons([{ label: '关闭', action: 'modal-close' }]));
+  }
+
+  async function handleEditKbArticle(id) {
+    const a = await api('/api/kb/articles/' + id);
+    openModal('编辑知识文章', kbArticleFormHtml(a),
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-kb-article-btn' }]));
+  }
+
+  async function updateKbArticle(form, id) {
+    try {
+      await api('/api/kb/articles/' + id, { method: 'PUT', body: JSON.stringify(readForm(form)) });
+      toast('文章已更新');
+      closeModal();
+      await renderKnowledge();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleDeleteKbArticle(id) {
+    openModal('删除确认', '<p>确认删除该知识文章吗？</p>',
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认删除', cls: 'danger', action: 'confirm-delete-kb-article', id: 'del-kb-article-btn' }]),
+      () => { window._delKbArticleId = id; });
+  }
+
+  async function confirmDeleteKbArticle() {
+    try {
+      await api('/api/kb/articles/' + window._delKbArticleId, { method: 'DELETE' });
+      toast('已删除');
+      closeModal();
+      await renderKnowledge();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleKbAsk() {
+    const q = document.getElementById('kb-question').value.trim();
+    if (!q) return toast('请输入问题', true);
+    const box = document.getElementById('kb-answer');
+    box.innerHTML = '<div class="muted">AI 思考中…</div>';
+    try {
+      const res = await api('/api/ai/knowledge', { method: 'POST', body: JSON.stringify({ question: q }) });
+      const d = res.data || {};
+      box.innerHTML = `<div style="font-weight:600">回答</div><div class="mt8" style="white-space:pre-wrap">${esc(d.answer||'')}</div>
+        ${(d.citations||[]).length?`<div class="mt8 small muted">引用文档：${d.citations.map(c=>esc(c)).join('、')}</div>`:''}`;
+    } catch (e) {
+      box.innerHTML = `<div class="small" style="color:var(--risk-red)">${esc(e.message)}</div>`;
+    }
+  }
+
   // ---------------- reminders ----------------
   async function renderReminders() {
     const [items, rules] = await Promise.all([api('/api/reminders'), api('/api/remind-rules')]);
@@ -1576,13 +2080,17 @@
           <div class="field"><label>链接</label><input class="input" name="href" value="#/overview"></div>
           <div class="field full"><label>备注</label><input class="input" name="remark"></div>
           <div class="field"><label><input type="checkbox" name="visible" checked> 可见</label></div>
+          <div class="field full"><label>可见角色</label><div class="row">
+            <label><input type="checkbox" name="role_admin" checked> 管理员</label>
+            <label><input type="checkbox" name="role_viewer" checked> 只读</label>
+          </div></div>
         </div>
       </form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-menu-item-btn' }]));
   }
 
   async function saveMenuItem(form) {
     try {
-      await api('/api/menu/items', { method: 'POST', body: JSON.stringify(readForm(form)) });
+      await api('/api/menu/items', { method: 'POST', body: JSON.stringify(readMenuForm(form)) });
       toast('菜单已保存');
       closeModal();
       await loadMenu();
@@ -1605,18 +2113,30 @@
           <div class="field"><label>链接</label><input class="input" name="href" value="${esc(m.href)}"></div>
           <div class="field full"><label>备注</label><input class="input" name="remark" value="${esc(m.remark || '')}"></div>
           <div class="field"><label><input type="checkbox" name="visible" ${m.visible?'checked':''}> 可见</label></div>
+          <div class="field full"><label>可见角色</label><div class="row">
+            <label><input type="checkbox" name="role_admin" ${(m.roles||[]).includes('admin')?'checked':''}> 管理员</label>
+            <label><input type="checkbox" name="role_viewer" ${(m.roles||[]).includes('viewer')?'checked':''}> 只读</label>
+          </div></div>
         </div>
       </form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-menu-item-btn' }]));
   }
 
   async function updateMenuItem(form, id) {
     try {
-      await api('/api/menu/items/' + id, { method: 'PUT', body: JSON.stringify(readForm(form)) });
+      await api('/api/menu/items/' + id, { method: 'PUT', body: JSON.stringify(readMenuForm(form)) });
       toast('菜单已更新');
       closeModal();
       await loadMenu();
       await renderSettings();
     } catch (e) { toast(e.message, true); }
+  }
+
+  function readMenuForm(form) {
+    const data = readForm(form);
+    const roles = [];
+    if (data.role_admin) roles.push('admin');
+    if (data.role_viewer) roles.push('viewer');
+    return { ...data, roles: roles.length ? roles : ['admin'] };
   }
 
   async function handleDeleteMenuItem(id) {
@@ -1641,8 +2161,11 @@
     const modules = [
       ['project', '项目管理'],
       ['fund', '资金台账'],
+      ['contract', '合同管理'],
       ['doc', '文档管理'],
       ['remind', '提醒管理'],
+      ['kb', '知识库'],
+      ['template', '模板管理'],
       ['ai', 'AI 配置'],
       ['menu', '菜单/系统设置']
     ];
@@ -1669,7 +2192,7 @@
   function readUserForm(form) {
     const data = readForm(form);
     const permissions = {};
-    ['project', 'fund', 'doc', 'remind', 'ai', 'menu'].forEach((key) => {
+    ['project', 'fund', 'contract', 'doc', 'remind', 'kb', 'template', 'ai', 'menu'].forEach((key) => {
       if (data['perm_' + key]) permissions[key] = { write: true };
     });
     return { username: data.username, name: data.name, role: data.role, password: data.password || undefined, permissions };
@@ -1784,6 +2307,7 @@
     },
     'select-project'(el) { handleSelectProject(actionArg(el)); },
     'new-project': handleNewProject,
+    'project-import': handleProjectImport,
     'toggle-project-view': toggleProjectView,
     'edit-project'(el) { handleEditProject(actionArg(el)); },
     'delete-project'(el) { handleDeleteProject(actionArg(el)); },
@@ -1812,6 +2336,25 @@
     'stage-risk-review': handleStageRiskReview,
     'ai-doc-template'(el) { handleAiDocTemplate(el.dataset.tpl); },
     'download'(el) { handleDownload(el); },
+    'contract-tab'(el) { window._contractTab = el.dataset.tab; renderContracts(); },
+    'new-back-contract': handleNewBackContract,
+    'edit-back-contract'(el) { handleEditBackContract(actionArg(el)); },
+    'delete-back-contract'(el) { handleDeleteBackContract(actionArg(el)); },
+    'edit-front-contract'(el) { handleEditFrontContract(actionArg(el)); },
+    'template-tab'(el) { window._templateType = el.dataset.tab; renderTemplates(); },
+    'new-template': handleNewTemplate,
+    'edit-template'(el) { handleEditTemplate(actionArg(el)); },
+    'delete-template'(el) { handleDeleteTemplate(actionArg(el)); },
+    'select-kb-category'(el) { selectKbCategory(actionArg(el)); },
+    'new-kb-category': handleNewKbCategory,
+    'edit-kb-category'(el) { handleEditKbCategory(actionArg(el)); },
+    'delete-kb-category'(el) { handleDeleteKbCategory(actionArg(el)); },
+    'kb-search': handleKbSearch,
+    'kb-ask': handleKbAsk,
+    'new-kb-article': handleNewKbArticle,
+    'view-kb-article'(el) { handleViewKbArticle(actionArg(el)); },
+    'edit-kb-article'(el) { handleEditKbArticle(actionArg(el)); },
+    'delete-kb-article'(el) { handleDeleteKbArticle(actionArg(el)); },
     'new-ai-model': handleNewAiModel,
     'edit-ai-model'(el) { handleEditAiModel(actionArg(el)); },
     'delete-ai-model'(el) { handleDeleteAiModel(actionArg(el)); },
@@ -1823,7 +2366,19 @@
     'import-menu': importMenu,
     'new-user': handleNewUser,
     'edit-user'(el) { handleEditUser(actionArg(el)); },
-    'delete-user'(el) { handleDeleteUser(actionArg(el)); }
+    'delete-user'(el) { handleDeleteUser(actionArg(el)); },
+    'confirm-delete-project': confirmDeleteProject,
+    'confirm-delete-fund': confirmDeleteFund,
+    'confirm-delete-contract': confirmDeleteContract,
+    'confirm-delete-folder': confirmDeleteFolder,
+    'confirm-delete-docfile': confirmDeleteDocfile,
+    'confirm-delete-back-contract': confirmDeleteBackContract,
+    'confirm-delete-template': confirmDeleteTemplate,
+    'confirm-delete-kb-category': confirmDeleteKbCategory,
+    'confirm-delete-kb-article': confirmDeleteKbArticle,
+    'confirm-delete-ai-model': confirmDeleteAiModel,
+    'confirm-delete-menu-item': confirmDeleteMenuItem,
+    'confirm-delete-user': confirmDeleteUser
   };
 
   const SUBMITS = {
@@ -1843,7 +2398,16 @@
     'save-menu-item': saveMenuItem,
     'update-menu-item': (form) => updateMenuItem(form, form.dataset.id),
     'save-user': saveUser,
-    'update-user': (form) => updateUser(form, form.dataset.id)
+    'update-user': (form) => updateUser(form, form.dataset.id),
+    'save-back-contract': saveBackContract,
+    'update-back-contract': (form) => updateBackContract(form, form.dataset.id),
+    'update-front-contract': (form) => updateFrontContract(form, form.dataset.id),
+    'save-template': saveTemplate,
+    'update-template': (form) => updateTemplate(form, form.dataset.id),
+    'save-kb-category': saveKbCategory,
+    'update-kb-category': (form) => updateKbCategory(form, form.dataset.id),
+    'save-kb-article': saveKbArticle,
+    'update-kb-article': (form) => updateKbArticle(form, form.dataset.id)
   };
 
   document.addEventListener('click', (e) => {
@@ -1871,6 +2435,9 @@
   document.addEventListener('change', (e) => {
     if (e.target.matches('#menu-import-file') && e.target.files && e.target.files[0]) {
       return handleMenuImport(e.target.files[0]);
+    }
+    if (e.target.matches('#project-import-file') && e.target.files && e.target.files[0]) {
+      return doProjectImport(e.target.files[0]);
     }
     if (e.target.matches('input[data-rule]')) return toggleRule(e.target);
     if (e.target.matches('select[data-cap]')) return changeCapModel(e.target);

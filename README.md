@@ -103,3 +103,11 @@ pms/
 ## 说明
 
 本系统根据《研发交接文档-需求规格说明书.md》与 `pms-prototype-v1.0.zip` 原型实现，原型中的 `localStorage` 持久化已升级为服务端 SQLite + REST API。
+
+## 测试
+
+```bash
+node scripts/test-api.mjs   # 后端 API 全链路测试（62 项断言）
+node scripts/test-e2e.mjs   # 无头浏览器端到端测试（页面/交互/权限，22 项检查）
+node scripts/verify.js      # 8 大页面渲染走查
+```

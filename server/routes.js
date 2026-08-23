@@ -6,7 +6,7 @@ const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
 const ExcelJS = require('exceljs');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
-const { db, encrypt, decrypt, seedDocFolders, UPLOAD_DIR, hashPassword } = require('./db');
+const { db, encrypt, decrypt, seedDocFolders, seedProjectMilestones, UPLOAD_DIR, hashPassword } = require('./db');
 const { login, logout, requireAuth, requireAdmin, requireWrite, getSessionUser, fmt } = require('./auth');
 const ai = require('./ai');
 
@@ -314,6 +314,7 @@ function registerRoutes(app, upload) {
         Number(b.amount || 0), Number(b.paid || 0), b.risk || 'green', b.stage || '启动',
         b.type || '', b.sign_date || null, b.deadline || null, b.pm || '陈志远', b.remark || '', now(), now());
     seedDocFolders(id);
+    seedProjectMilestones(id);
     res.json(deriveProject(project(id)));
   });
 
@@ -441,6 +442,7 @@ function registerRoutes(app, upload) {
           ['启动', '实施', '收尾'].includes(s(row.stage)) ? s(row.stage) : '启动', s(row.type),
           cellToDate(row.sign_date), cellToDate(row.deadline), s(row.pm) || '陈志远', s(row.remark), now(), now());
         seedDocFolders(id);
+        seedProjectMilestones(id);
         result.success++;
       } catch (e) {
         result.failed.push({ row: lineNo, reason: e.message || '写入失败' });
@@ -1407,6 +1409,7 @@ function registerRoutes(app, upload) {
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, b.name, b.unit || '', Number(b.amount || 0), 0, b.risk || 'green', b.stage || '启动', b.type || '', b.sign_date || null, b.deadline || null, b.pm || '陈志远', b.remark || '', now(), now());
     seedDocFolders(id);
+    seedProjectMilestones(id);
     res.json(deriveProject(project(id)));
   });
 }

@@ -751,6 +751,15 @@ function ensureRemindRules() {
 }
 
 function seedMilestones() {
+  const projects = db.prepare('SELECT * FROM projects').all();
+  for (const p of projects) seedProjectMilestones(p.id);
+}
+
+function seedProjectMilestones(projectId) {
+  const p = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+  if (!p) return;
+  const count = db.prepare('SELECT COUNT(*) AS c FROM project_milestones WHERE project_id = ?').get(projectId);
+  if (count.c > 0) return;
   const standard = [
     ['前向发起', '售前', ['中标通知书', '前向合同']],
     ['前向归档', '售前', ['前向合同归档材料']],
@@ -765,17 +774,12 @@ function seedMilestones() {
     ['终验', '售中', ['前向验收报告', '后向验收报告', '验收照片', '报障二维码照片']],
     ['终验支付', '售后', ['付款凭证']]
   ];
-  const projects = db.prepare('SELECT * FROM projects').all();
-  const count = db.prepare('SELECT COUNT(*) AS c FROM project_milestones WHERE project_id = ?');
   const ins = db.prepare('INSERT INTO project_milestones(project_id,seq,name,stage,due_date,status,docs) VALUES(?,?,?,?,?,?,?)');
-  for (const p of projects) {
-    if (count.get(p.id).c > 0) continue;
-    const dates = [p.sign_date, p.forward_sign_date, p.backward_sign_date, p.backward_sign_date, p.start_date,
-      p.start_date, null, null, p.expected_acceptance_date, null, p.expected_acceptance_date, null];
-    standard.forEach(([name, stage, docs], i) => {
-      ins.run(p.id, i + 1, name, stage, dates[i] || null, 'pending', JSON.stringify(docs));
-    });
-  }
+  const dates = [p.sign_date, p.forward_sign_date, p.backward_sign_date, p.backward_sign_date, p.start_date,
+    p.start_date, null, null, p.expected_acceptance_date, null, p.expected_acceptance_date, null];
+  standard.forEach(([name, stage, docs], i) => {
+    ins.run(projectId, i + 1, name, stage, dates[i] || null, 'pending', JSON.stringify(docs));
+  });
 }
 
 function migrateDictFoldersV2() {
@@ -834,5 +838,6 @@ module.exports = {
   hashPassword,
   verifyPassword,
   seed,
-  seedDocFolders
+  seedDocFolders,
+  seedProjectMilestones
 };

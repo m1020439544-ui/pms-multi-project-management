@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS projects (
   backward_unit_name TEXT,
   backward_contract_amount REAL NOT NULL DEFAULT 0,
   backward_sign_date TEXT,
+  income_type TEXT,
+  net_or_full TEXT,
+  milestone TEXT,
+  next_milestone TEXT,
+  next_milestone_date TEXT,
+  progress TEXT,
+  delay_extension TEXT,
+  delay_days INTEGER NOT NULL DEFAULT 0,
   amount REAL NOT NULL DEFAULT 0,
   paid REAL NOT NULL DEFAULT 0,
   risk TEXT NOT NULL DEFAULT 'green',
@@ -250,6 +258,61 @@ CREATE TABLE IF NOT EXISTS templates (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+
+CREATE TABLE IF NOT EXISTS project_milestones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT '售中',
+  due_date TEXT,
+  done_date TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  docs TEXT NOT NULL DEFAULT '[]',
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS project_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  category TEXT,
+  item TEXT NOT NULL,
+  result TEXT NOT NULL DEFAULT '待检查',
+  remark TEXT,
+  checked_by TEXT,
+  checked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS project_audits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT 'forward',
+  audit_type TEXT,
+  clause TEXT,
+  plan_date TEXT,
+  done_date TEXT,
+  status TEXT NOT NULL DEFAULT '待送审',
+  remark TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS project_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  change_type TEXT NOT NULL,
+  before_value TEXT,
+  after_value TEXT,
+  detail TEXT,
+  changed_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
 `);
 
 function ensureColumns(table, columns) {
@@ -282,7 +345,15 @@ ensureColumns('projects', {
   backward_contract_name: 'backward_contract_name TEXT',
   backward_unit_name: 'backward_unit_name TEXT',
   backward_contract_amount: 'backward_contract_amount REAL NOT NULL DEFAULT 0',
-  backward_sign_date: 'backward_sign_date TEXT'
+  backward_sign_date: 'backward_sign_date TEXT',
+  income_type: 'income_type TEXT',
+  net_or_full: 'net_or_full TEXT',
+  milestone: 'milestone TEXT',
+  next_milestone: 'next_milestone TEXT',
+  next_milestone_date: 'next_milestone_date TEXT',
+  progress: 'progress TEXT',
+  delay_extension: 'delay_extension TEXT',
+  delay_days: 'delay_days INTEGER NOT NULL DEFAULT 0'
 });
 
 ensureColumns('menu_config', {
@@ -492,6 +563,10 @@ function seed() {
   ensureDefaultMenu();
   seedKnowledgeBase();
   seedTemplates();
+  ensureOfficialTemplates();
+  ensureRemindRules();
+  seedMilestones();
+  migrateDictFoldersV2();
 }
 
 function ensureDefaultMenu() {
@@ -555,6 +630,41 @@ function seedKnowledgeBase() {
     db.prepare('INSERT INTO kb_articles(category_id,title,content,tags,author) VALUES(?,?,?,?,?)')
       .run(cat ? cat.id : null, '终验注意事项', '终验前完成资料归档、问题闭环与客户确认，终验款与验收单联动。', '验收,经验', 'PMO');
   }
+  const ensure = db.prepare('SELECT COUNT(*) AS c FROM kb_articles WHERE title = ?');
+  const ins = db.prepare('INSERT INTO kb_articles(category_id,title,content,tags,author) VALUES(?,?,?,?,?)');
+  const cat = db.prepare('SELECT id FROM kb_categories WHERE name = ? LIMIT 1').get('项目管理规范');
+  const catId = cat ? cat.id : null;
+  const checklist = [
+    '客情关系', '是否低价中标，造成的实施交付影响需预估', '是否多次转包', '清单不含和其他专业的对接费',
+    '同系统不同品牌产品之间的对接问题', '多个后向（含客支自主实施）的施工分界面、维保分界面',
+    '后向是否提前进场', '整体方案是否过单项目', '总包管理费处理方式', '利旧系统、平台涉及的第三方对接、费用或二次开发',
+    '工期明显不合理即预警工期', '合同外承诺甲方的软硬件需求', '合同是否包含和其他专业的对接费用',
+    '明确深化设计、过程资料、竣工图谁来做', '合同外答应甲方的需求或承诺给甲方的物料', '合同清单不全面、缺漏项的兜底方',
+    '前后向合同税率是否一致', '是否有保证金及缴费凭证', '是否有监理、是否审计（跟踪审计/结算审计）',
+    '是否有主营收入', '后向采购分包情况、各分包单位界面', '设备采购交期是否能满足施工进度',
+    '自主采购设备的送货、安装、调试、质保维护、配套辅材', '自主采购管材缺少配件（弯头、管卡）',
+    '自主采购设备参数符合标书要求并需检测报告', '自主采购设备过质保的维修费用', '采购材料缺少详细参数、调试服务需明确',
+    '材料清单报价与施工内容不符（审计风险）', '自主实施所需工器具与少量耗材提供方', '客支和后向的施工分界面',
+    '客支参与实施，售后和后向维护分界面', '综合布线是否拆包', '配套其他专业布线的上架集成与维护职责',
+    '借电信杆装箱是否按大网标准', '接电方式（挂表/自取）与电费支付', '传输方式（VPN/裸光纤）费用不允许打包给后向',
+    '重大监控项目与后向明确监控完好率指标', '外场管线、开挖、做井等子项明确', '软件模块细节程度、数据输入输出管控标准',
+    '提前实施软件项目需求重新梳理论证', '软件系统对接费用', '软件功能点实现方式', '平台类软件系统数据来源',
+    '组网方案及实施是否原厂或后向单位', '光模块技术参数（距离）', '安服是否自主实施、实施人员',
+    '服务报告提供方与审核方', '维保期限、响应时间、维保技术指标前后向同等', '驻场人员提供方与管理方式',
+    '备品备件提供方'
+  ];
+  if (!ensure.get('售中交接问题清单（51项）').c) {
+    ins.run(catId, '售中交接问题清单（51项）', checklist.map((x, i) => `${i + 1}. ${x}`).join('\n'), '交接,检查单,售中', 'PMO');
+  }
+  if (!ensure.get('六必有审计档案要求').c) {
+    ins.run(catId, '六必有审计档案要求', '1.商机阶段截图\n2.客情维系截图\n3.方案与评审截图\n4.投标/谈判结果截图\n5.售中管控材料（开工、到货、实施、初验、终验）\n6.常青藤交维五要素截图', '审计,六必有', 'PMO');
+  }
+  if (!ensure.get('售中三必做管控矩阵').c) {
+    ins.run(catId, '售中三必做管控矩阵', '开工：售前交底+开工启动会+实施方案+施工计划（必留：交底纪要、启动会纪要、实施方案、施工计划）\n到货：清点+签收+拍照（必留：到货清单、前后向签收单、现场照片）\n实施：随工打卡+检查+安全管理+周期报告\n初验：初验+培训+拍照+遗留问题\n终验：问题处理+终验拍照+报障二维码+转售后', '规范,售中,三必做', 'PMO');
+  }
+  if (!ensure.get('投资型项目内控与财务要求').c) {
+    ins.run(catId, '投资型项目内控与财务要求', '100-500万须经总经理专题会审议；500万+须经总办会审议；3000万+须经省公司总办会审议。\n收投比不低于1.11（动态调整），NPV＞0。', '内控,财务,投资型', 'PMO');
+  }
 }
 
 function seedTemplates() {
@@ -569,19 +679,114 @@ function seedTemplates() {
   }
 }
 
+function ensureOfficialTemplates() {
+  const items = [
+    ['doc', '售前交底会记录（附件1-1）', '项目情况、客户信息、问题风险及初步应对措施'],
+    ['doc', '开工启动会记录（附件1-6）', '项目范围、分工界面、进度安排、人员投入、风险管控'],
+    ['doc', '验收报告-前向（附件1-8）', '前向验收报告标准模板'],
+    ['doc', '验收报告-后向（附件3.10）', '后向验收报告标准模板'],
+    ['project', '总体实施方案-非软件开发类（附件1-4）', '需体现自有能力或与主营业务融合情况'],
+    ['project', '总体实施方案-软件开发类（附件1-5）', '软件开发类实施方案模板'],
+    ['project', '施工计划-非软件开发类（附件1-2）', '百万级≥7个主任务'],
+    ['project', '施工计划-软件开发类（附件1-3）', '百万级≥7个主任务'],
+    ['contract', '到货签收单-前向（附件1-7）', '建设/监理/承建三方签字'],
+    ['contract', '到货签收单-后向', '电信方与合作方签字']
+  ];
+  const exists = db.prepare('SELECT COUNT(*) AS c FROM templates WHERE name = ?');
+  const ins = db.prepare('INSERT INTO templates(type,name,description,version) VALUES(?,?,?,1)');
+  for (const [type, name, desc] of items) {
+    if (!exists.get(name).c) ins.run(type, name, desc);
+  }
+}
+
+function ensureRemindRules() {
+  const items = [
+    ['保证金到期提醒', '投标保证金3个月/履约质保保证金验收后3个月逾期预警', '["系统内","首页待办"]'],
+    ['开票回款预警', '我方开票3个月未回款将无法继续开票，提前预警', '["系统内","邮件"]'],
+    ['收入欠费预警', '收入欠费超3个月即时预警', '["系统内","首页待办"]'],
+    ['双周管控记录提醒', '百万级以上项目每30自然日至少2次施工管控记录', '["系统内"]'],
+    ['超期180天预警', '项目超期180天进入专项跟踪', '["系统内","首页待办","企业微信"]']
+  ];
+  const exists = db.prepare('SELECT COUNT(*) AS c FROM remind_rules WHERE name = ?');
+  const ins = db.prepare('INSERT INTO remind_rules(name,enabled,trigger_desc,channels) VALUES(?,1,?,?)');
+  for (const [name, desc, channels] of items) {
+    if (!exists.get(name).c) ins.run(name, desc, channels);
+  }
+}
+
+function seedMilestones() {
+  const standard = [
+    ['前向发起', '售前', ['中标通知书', '前向合同']],
+    ['前向归档', '售前', ['前向合同归档材料']],
+    ['后向发起', '采购', ['采购需求', '采购方案']],
+    ['后向归档', '采购', ['后向合同', '采购结果']],
+    ['开工', '售中', ['售前交底会纪要', '开工启动会记录', '总体实施方案', '施工计划']],
+    ['到货', '售中', ['到货清单', '前向到货签收单', '后向到货签收单', '现场照片']],
+    ['完工', '售中', ['现场管理记录', '施工管控记录', '实施照片']],
+    ['完工款支付', '售中', ['付款凭证', '进度证明']],
+    ['初验', '售中', ['前向初验报告', '后向初验报告']],
+    ['初验支付', '售中', ['付款凭证']],
+    ['终验', '售中', ['前向验收报告', '后向验收报告', '验收照片', '报障二维码照片']],
+    ['终验支付', '售后', ['付款凭证']]
+  ];
+  const projects = db.prepare('SELECT * FROM projects').all();
+  const count = db.prepare('SELECT COUNT(*) AS c FROM project_milestones WHERE project_id = ?');
+  const ins = db.prepare('INSERT INTO project_milestones(project_id,seq,name,stage,due_date,status,docs) VALUES(?,?,?,?,?,?,?)');
+  for (const p of projects) {
+    if (count.get(p.id).c > 0) continue;
+    const dates = [p.sign_date, p.forward_sign_date, p.backward_sign_date, p.backward_sign_date, p.start_date,
+      p.start_date, null, null, p.expected_acceptance_date, null, p.expected_acceptance_date, null];
+    standard.forEach(([name, stage, docs], i) => {
+      ins.run(p.id, i + 1, name, stage, dates[i] || null, 'pending', JSON.stringify(docs));
+    });
+  }
+}
+
+function migrateDictFoldersV2() {
+  const migrated = db.prepare("SELECT value FROM app_state WHERE key = 'dict_folders_v2'").get();
+  if (migrated) return;
+  const projects = db.prepare('SELECT id FROM projects').all();
+  for (const row of projects) {
+    db.prepare('DELETE FROM doc_files WHERE project_id = ?').run(row.id);
+    db.prepare('DELETE FROM doc_folders WHERE project_id = ?').run(row.id);
+    seedDocFolders(row.id);
+  }
+  db.prepare("INSERT INTO app_state(key,value) VALUES('dict_folders_v2','1')").run();
+}
+
 function seedDocFolders(projectId) {
   const tree = [
-    { name: '01-前向材料', children: ['合同与协议', '标书', '中标通知', '发票', '回款凭证', '验收单', '里程碑证明', '质保金材料'] },
-    { name: '02-售中项目管理', children: ['项目计划', '进度报告', '周报', '月报', '会议纪要'] },
-    { name: '03-收尾归档', children: ['归档清单', '竣工资料', '验收报告'] }
+    { name: '01-前向材料', children: [
+      '01-招投标文件（招标文件、标前评审材料、投标文件盖章扫描件）',
+      '02-中标通知书（原件+扫描件）',
+      '03-设计方案（解决方案）',
+      '04-需求沟通记录（微信沟通记录截图、沟通邮件等）',
+      '05-前向合同（签约盖章版本）',
+      '06-前向清单（合同清单、成本清单、利润率分析表、方案解构清单）',
+      '07-三重一大上会材料和会议纪要、标前评审会议纪要、项目投标评审材料',
+      '08-售前交底记录'
+    ] },
+    { name: '02-售中项目管理', children: [
+      '01-后向采购',
+      '02-后向合同',
+      '03-项目清单',
+      '04-收款付款',
+      { name: '05-售中项目管理', children: [
+        '00-项目清单', '01-售前交底', '02-开工启动会', '03-实施方案', '04-施工计划',
+        '05-到货签收单', '06-项目实施', '07-验收报告（含进度报告）', '08-审计（前后向审计）', '09-形象材料'
+      ] },
+      '06-合同欠费清单'
+    ] },
+    { name: '03-收尾归档', children: ['01-归档清单', '02-审计材料（前后向）', '03-验收报告', '04-形象材料'] }
   ];
   let sort = 0;
   const folderIns = db.prepare('INSERT INTO doc_folders(project_id,parent_id,name,sort_order) VALUES(?,?,?,?)');
-  for (const top of tree) {
-    const r = folderIns.run(projectId, null, top.name, sort++);
-    const parentId = Number(r.lastInsertRowid);
-    top.children.forEach((name, i) => folderIns.run(projectId, parentId, name, i));
+  function insert(node, parentId) {
+    const r = folderIns.run(projectId, parentId, node.name, sort++);
+    const id = Number(r.lastInsertRowid);
+    (node.children || []).forEach((child, i) => insert(typeof child === 'string' ? { name: child } : child, id));
   }
+  tree.forEach((top) => insert(top, null));
 }
 
 module.exports = {

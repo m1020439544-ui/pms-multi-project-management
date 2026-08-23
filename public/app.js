@@ -609,8 +609,15 @@
           <div class="field"><label>截止日期</label><input class="input" type="date" name="deadline" value="${val('deadline')}"></div>
           <div class="field"><label>阶段</label><select class="input" name="stage">${['启动','实施','收尾'].map(s=>`<option ${s===v.stage?'selected':''}>${s}</option>`).join('')}</select></div>
           <div class="field"><label>风险</label><select class="input" name="risk">${['green','yellow','red'].map(r=>`<option value="${r}" ${r===v.risk?'selected':''}>${riskInfo(r).txt}</option>`).join('')}</select></div>
+          <div class="field"><label>收入类型</label><select class="input" name="income_type"><option value="">未设置</option><option value="周期" ${v.income_type==='周期'?'selected':''}>周期</option><option value="非周期" ${v.income_type==='非周期'?'selected':''}>非周期</option></select></div>
+          <div class="field"><label>净额/全额</label><select class="input" name="net_or_full"><option value="">未设置</option><option value="净额" ${v.net_or_full==='净额'?'selected':''}>净额</option><option value="全额" ${v.net_or_full==='全额'?'selected':''}>全额</option></select></div>
+          <div class="field"><label>当前里程碑</label><input class="input" name="milestone" value="${val('milestone')}"></div>
+          <div class="field"><label>下一里程碑</label><input class="input" name="next_milestone" value="${val('next_milestone')}"></div>
+          <div class="field"><label>下一里程碑预计时间</label><input class="input" type="date" name="next_milestone_date" value="${val('next_milestone_date')}"></div>
+          <div class="field"><label>延期函</label><input class="input" name="delay_extension" value="${val('delay_extension')}"></div>
           <div class="field"><label>项目经理</label><input class="input" name="pm" value="${val('pm', '陈志远')}"></div>
           <div class="field full"><label>备注</label><textarea class="input" name="remark">${val('remark')}</textarea></div>
+          <div class="field full"><label>项目进度详述</label><textarea class="input" name="progress">${val('progress')}</textarea></div>
           <div class="field full"><h3 style="margin:8px 0 4px;font-size:14px">前向合同信息</h3></div>
           <div class="field"><label>前向合同编码</label><input class="input" name="forward_contract_code" value="${val('forward_contract_code')}"></div>
           <div class="field"><label>前向合同名称</label><input class="input" name="forward_contract_name" value="${val('forward_contract_name')}"></div>
@@ -700,11 +707,15 @@
     if (tab === 'risks') {
       const reminders = await api('/api/reminders');
       const riskItems = reminders.filter((r) => r.project_id === project.id || r.type === 'risk');
-      body.innerHTML = risksHtml(project, riskItems);
+      let checks = [];
+      try { checks = (await api('/api/pmo/checks')).filter((c) => c.project_id === project.id && c.result !== '通过'); } catch (e) {}
+      body.innerHTML = risksHtml(project, riskItems, checks);
       return;
     }
     if (tab === 'changes') {
-      body.innerHTML = changesHtml(project);
+      let changes = [];
+      try { changes = (await api('/api/pmo/changes')).filter((c) => c.project_id === project.id); } catch (e) {}
+      body.innerHTML = changesHtml(project, changes);
       return;
     }
   }
@@ -733,6 +744,15 @@
           ${row('签约归档时间', p.sign_archive_date)}
           ${row('签约日期', p.sign_date)}
           ${row('截止日期', p.deadline)}
+        `)}
+        ${card('售中管控', `
+          ${row('收入类型（周期/非周期）', p.income_type)}
+          ${row('项目净额/全额', p.net_or_full)}
+          ${row('当前里程碑', p.milestone)}
+          ${row('下一里程碑', p.next_milestone)}
+          ${row('下一里程碑预计时间', p.next_milestone_date)}
+          ${row('是否拿到延期函', p.delay_extension)}
+          ${row('项目进度详述', p.progress)}
         `)}
       </div>
       <div style="display:flex;flex-direction:column;gap:16px">
@@ -1158,7 +1178,22 @@
     } catch (e) { toast(e.message, true); }
   }
 
-  function risksHtml(project, items) {
+  async function handleRebuildFolders(projectId) {
+    openModal('重建标准目录', '<p>将按南京分公司 DICT 标准目录重建该项目的文档目录树，并清空已有目录与文档，确认继续？</p>',
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认重建', cls: 'danger', action: 'confirm-rebuild-folders', id: 'rebuild-folders-btn' }]),
+      () => { window._rebuildProjectId = projectId; });
+  }
+
+  async function confirmRebuildFolders() {
+    try {
+      await api('/api/projects/' + window._rebuildProjectId + '/folders/init', { method: 'POST', body: JSON.stringify({}) });
+      toast('标准目录已重建');
+      closeModal();
+      await renderDocuments();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function risksHtml(project, items, checks) {
     return `<div class="grid" style="grid-template-columns:1fr 1fr">
       <div class="card card-pad">
         <h3 style="margin:0 0 12px;font-size:15px">风险记录</h3>
@@ -1170,6 +1205,12 @@
           </div>`).join('') : '<div class="empty">暂无风险记录</div>'}
       </div>
       <div class="card card-pad">
+        <h3 style="margin:0 0 12px;font-size:15px">质量检查问题</h3>
+        ${checks && checks.length ? checks.map(c=>`<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+          <div class="row"><span class="tag red">${esc(c.result)}</span><b>${esc(c.item)}</b></div>
+          <div class="small muted">${esc(c.category||'')} · ${esc(c.checked_by||'')} · ${esc(c.checked_at||'')}</div>
+        </div>`).join('') : '<div class="empty">暂无质检问题</div>'}
+        <div class="divider"></div>
         <h3 style="margin:0 0 12px;font-size:15px">AI 风险审核</h3>
         <p class="small muted">上传合同文本，AI 将按固定清单进行红黄绿评级。</p>
         <textarea class="input" id="risk-text" rows="5" placeholder="粘贴合同条款文本…"></textarea>
@@ -1197,52 +1238,83 @@
     if (btn) { btn.disabled = false; btn.textContent = '开始审核'; }
   }
 
-  function changesHtml(project) {
+  function changesHtml(project, changes) {
     return `<div class="card card-pad">
       <h3 style="margin:0 0 12px;font-size:15px">变更记录</h3>
-      <div class="empty">项目 ${esc(project.name)} 暂无变更记录（原型预置界面）。正式环境将对接操作审计日志。</div>
+      ${changes && changes.length ? `<div class="table-wrap"><table class="table">
+        <thead><tr><th>变更类型</th><th>变更前</th><th>变更后</th><th>说明</th><th>变更人</th><th>时间</th></tr></thead>
+        <tbody>${changes.map(c=>`<tr><td><span class="tag primary">${esc(c.change_type)}</span></td><td>${esc(c.before_value||'')}</td><td>${esc(c.after_value||'')}</td><td>${esc(c.detail||'')}</td><td>${esc(c.changed_by||'')}</td><td class="small">${esc(c.created_at||'')}</td></tr>`).join('')}</tbody>
+      </table></div>` : `<div class="empty">项目 ${esc(project.name)} 暂无变更记录</div>`}
     </div>`;
   }
 
   // ---------------- project stages ----------------
   async function renderProjectStages() {
     const project = await getCurrentProject();
+    let ms = [];
+    if (project) ms = await api('/api/projects/' + project.id + '/milestones');
+    const groups = [['售前', '售前'], ['采购', '采购'], ['售中', '售中'], ['售后', '售后']];
     appShell(`
-      ${viewTitle('三阶段流程', '启动 / 实施 / 收尾，AI 字段提取与风险审核双轨')}
+      ${viewTitle('项目三阶段流程', '售前→采购→售中→售后 · 12 步时间戳链，节点档案齐套后方可终验')}
       ${currentBanner(project)}
-      <div class="steps">
-        <div class="step active"><span class="dot">1</span>启动</div>
-        <div class="step"><span class="dot">2</span>实施</div>
-        <div class="step"><span class="dot">3</span>收尾</div>
-      </div>
+      ${project ? `
+      <div class="card card-pad mb16"><div class="row" style="flex-wrap:wrap">
+        ${ms.map(m=>`<span class="tag ${m.status==='done'?'green':(m.due_date&&m.due_date<today()?'red':'gray')}" title="${esc(m.name)} · ${esc(m.due_date||'')}">${m.seq}.${esc(m.name)}</span>`).join('')}
+      </div></div>
       <div class="grid" style="grid-template-columns:1fr 1fr">
-        <div class="card card-pad">
-          <h3 style="margin:0 0 12px;font-size:15px">启动阶段 · 文档上传</h3>
-          <div class="small muted mb16">上传 4 类文档：合同 / 标书 / 中标通知 / 立项材料</div>
-          <input class="input" type="file" id="stage-file">
-          <div class="row mt16"><button class="btn primary" data-action="stage-upload">上传文档</button></div>
-          <div id="stage-files" class="mt16"></div>
-        </div>
+        ${groups.map(([label, stage])=>`
+          <div class="card card-pad">
+            <h3 style="margin:0 0 12px;font-size:15px">${label}阶段</h3>
+            ${ms.filter(m=>m.stage===stage).map(m=>{ const st = m.status==='done' ? ['已完成','green'] : (m.due_date && m.due_date < today() ? ['已逾期','red'] : ['未完成','yellow']);
+              return `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
+                <div class="space-between"><b>${m.seq}. ${esc(m.name)}</b><span class="tag ${st[1]}">${st[0]}</span></div>
+                <div class="small muted">计划：${esc(m.due_date||'未定')}${m.done_date ? ' · 完成：' + esc(m.done_date) : ''}</div>
+                <div class="small muted">必留档案：${(m.docs||[]).map(d=>esc(d)).join('、')}</div>
+                ${canWrite('project') ? `<div class="mt8">${m.status==='done' ? `<button class="btn sm" data-action="ms-reset" data-id="${m.id}">重置</button>` : `<button class="btn sm primary" data-action="ms-done" data-id="${m.id}">标记完成</button>`}</div>` : ''}
+              </div>`; }).join('') || '<div class="empty">该阶段暂无节点</div>'}
+          </div>`).join('')}
+      </div>
+      ${stageQualityPanel(project)}
+      ` : '<div class="empty">请先选择项目</div>'}
+      <div class="grid mt16" style="grid-template-columns:1fr 1fr">
         <div class="card card-pad">
           <h3 style="margin:0 0 12px;font-size:15px">AI 字段抽取</h3>
-          <textarea class="input" id="extract-text" rows="6" placeholder="粘贴合同/标书文本，AI 将抽取 12 字段 JSON…"></textarea>
+          <textarea class="input" id="extract-text" rows="6" placeholder="粘贴合同/标书文本，AI 将抽取关键字段…"></textarea>
           <div class="row mt16"><button class="btn primary" data-action="ai-extract">AI 抽取字段</button></div>
           <div id="extract-result" class="mt16"></div>
         </div>
-      </div>
-      <div class="card card-pad mt16">
-        <h3 style="margin:0 0 12px;font-size:15px">风险审核双轨</h3>
-        <p class="small muted">AI 预审 + 人工复核，金额入账必须人工确认。</p>
-        <textarea class="input" id="stage-risk-text" rows="4" placeholder="粘贴合同文本进行风险审核…"></textarea>
-        <div class="row mt16"><button class="btn" data-action="stage-risk-review">AI 风险审核</button></div>
-        <div id="stage-risk-result" class="mt16"></div>
-      </div>
-      <div class="card card-pad mt16">
-        <h3 style="margin:0 0 8px;font-size:15px">实施 / 收尾阶段</h3>
-        <div class="small muted">实施与收尾流程在原型中为锁定预览；正式环境将按项目阶段解锁对应文档与归档清单。</div>
-        <div class="row mt16"><span class="tag gray">实施 · 锁定预览</span><span class="tag gray">收尾 · 生成归档清单 PDF + 已归档标记</span></div>
+        <div class="card card-pad">
+          <h3 style="margin:0 0 12px;font-size:15px">风险审核双轨</h3>
+          <p class="small muted">AI 预审 + 人工复核，金额入账必须人工确认。</p>
+          <textarea class="input" id="stage-risk-text" rows="4" placeholder="粘贴合同文本进行风险审核…"></textarea>
+          <div class="row mt16"><button class="btn" data-action="stage-risk-review">AI 风险审核</button></div>
+          <div id="stage-risk-result" class="mt16"></div>
+        </div>
       </div>`);
-    loadStageFiles(project);
+  }
+
+  function stageQualityPanel(project) {
+    const rules = [
+      ['开工', '百万级以上项目施工计划是否≥7个主任务'],
+      ['开工', '总体实施方案是否有编制单位且与前向合同我方主体一致'],
+      ['开工', '实施方案是否包含自有能力或与主营业务融合描述（≥100字）'],
+      ['到货', '后向到货签收单是否有系统水印、双方签字、电信红章'],
+      ['实施', '现场照片是否至少包含1名施工人员'],
+      ['实施', '施工管控记录是否每30自然日至少2次（百万级）'],
+      ['终验', '前向验收报告是否双方签字并盖章'],
+      ['终验', '后向验收报告是否有水印、双方签字、盖章'],
+      ['终验', '验收照片是否至少包含1名验收人员'],
+      ['终验', '是否粘贴报障二维码并拍照留痕']
+    ];
+    return `<div class="card card-pad mt16">
+      <div class="space-between mb16"><h3 style="margin:0;font-size:15px">AI 交付质检（交付质检助手规则）</h3><span class="muted small">质检结果将记入 PMO 管理 → 质量检查</span></div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>环节</th><th>质检规则</th><th></th></tr></thead>
+        <tbody>${rules.map(r=>`<tr><td><span class="tag primary">${esc(r[0])}</span></td><td>${esc(r[1])}</td>
+          <td class="actions">${canWrite('project') ? `<button class="btn sm" data-action="qa-check" data-item="${esc(r[1])}" data-category="${esc(r[0])}" data-result="通过">通过</button><button class="btn sm danger" data-action="qa-check" data-item="${esc(r[1])}" data-category="${esc(r[0])}" data-result="不通过">不通过</button>` : ''}</td></tr>`).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
   }
 
   async function loadStageFiles(project) {
@@ -1340,7 +1412,7 @@
     }
     const folders = await api('/api/projects/' + project.id + '/folders');
     appShell(`
-      ${viewTitle('文档中心', '可编辑文件夹树 + 文档表格行内增删改 + AI 模板')}
+      ${viewTitle('文档中心', 'DICT 标准目录 + 文档表格行内增删改 + AI 模板', canWrite('doc') ? `<button class="btn" data-action="rebuild-folders" data-id="${esc(project.id)}">${svg('folder')} 重建标准目录</button>` : '')}
       ${currentBanner(project)}
       <div class="grid" style="grid-template-columns:280px 1fr">
         <div class="card card-pad">
@@ -1622,16 +1694,36 @@
     } catch (e) { toast(e.message, true); }
   }
 
-  // ---------------- PMO management ----------------
+  // ---------------- PMO management（重新设计：组合总览 / 一会八表 / 里程碑管控 / 质量检查 / 送审进度 / 变更台账 / 成员） ----------------
   async function renderPmo() {
     const data = await api('/api/pmo/summary');
+    const tab = window._pmoTab || 'overview';
     appShell(`
-      ${viewTitle('PMO 管理', '项目管理办公室：组合健康度、成员与里程碑跟踪（信息管理，不含审批流）')}
+      ${viewTitle('PMO 管理', '按虎翼虎嗅 PMO 管理细则、一会八表、三必做与 AI 质检要求重设计')}
+      <div class="tabs">
+        ${[['overview','组合总览'],['eight','一会八表'],['milestones','里程碑管控'],['checks','质量检查'],['audits','送审进度'],['changes','变更台账'],['members','成员与分工']].map(([k,label])=>`<button class="tab ${tab===k?'active':''}" data-action="pmo-tab" data-tab="${k}">${label}</button>`).join('')}
+      </div>
+      <div id="pmo-body"></div>`);
+    const body = document.getElementById('pmo-body');
+    if (tab === 'overview') body.innerHTML = pmoOverviewHtml(data);
+    else if (tab === 'eight') body.innerHTML = pmoEightHtml(data);
+    else if (tab === 'milestones') body.innerHTML = pmoMilestonesHtml(data);
+    else if (tab === 'checks') body.innerHTML = pmoChecksHtml(data);
+    else if (tab === 'audits') body.innerHTML = pmoAuditsHtml(data);
+    else if (tab === 'changes') body.innerHTML = pmoChangesHtml(data);
+    else body.innerHTML = pmoMembersHtml(data);
+  }
+
+  function pmoOverviewHtml(data) {
+    const t = data.totals;
+    return `
       <div class="grid stat-grid mb16">
-        ${statCard('在管项目', num(data.totals.projectCount), '个', '全量项目')}
-        ${statCard('高风险项目', num(data.totals.riskCount), '个', '需重点跟踪')}
-        ${statCard('合同总额', num(data.totals.totalAmount), '万', '')}
-        ${statCard('PMO 成员', num(data.members.length), '人', '')}
+        ${statCard('在管项目', num(t.projectCount), '个', '风险 ' + t.riskCount + ' 个')}
+        ${statCard('百万级项目', num(t.millionCount), '个', '100万以上升级管控')}
+        ${statCard('500万+项目', num(t.over500Count), '个', '重大风险专项')}
+        ${statCard('超期180天', num(t.overdue180Count), '个', '专项跟踪')}
+        ${statCard('收入欠费', num(t.debtTotal), '万', '应收未收')}
+        ${statCard('送审待办', num(t.auditPending), '项', '检查待办 ' + t.checkPending + ' 项')}
       </div>
       <div class="split">
         <div class="card card-pad">
@@ -1642,17 +1734,217 @@
           </table></div>
         </div>
         <div class="card card-pad">
-          <h3 style="margin:0 0 12px;font-size:15px">成员</h3>
-          ${data.members.map(m=>`<div class="row" style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="avatar">${esc(m.name.slice(0,1))}</div><div class="flex1"><b>${esc(m.name)}</b><div class="small muted">${esc(m.username)}</div></div><span class="tag ${m.role==='admin'?'primary':'gray'}">${m.role==='admin'?'管理员':'只读'}</span></div>`).join('')}
+          <h3 style="margin:0 0 12px;font-size:15px">风险项目</h3>
+          ${data.risks.length ? data.risks.map(r=>`<div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><div class="flex1"><b>${esc(r.name)}</b><div class="small muted">${esc(r.remark||'')}</div></div><span class="tag ${r.risk==='red'?'red':'yellow'}">${riskInfo(r.risk).txt}</span></div>`).join('') : '<div class="empty">暂无风险项目</div>'}
         </div>
       </div>
       <div class="card card-pad mt16">
-        <h3 style="margin:0 0 12px;font-size:15px">风险与里程碑</h3>
+        <h3 style="margin:0 0 12px;font-size:15px">里程碑预警（逾期 / 14天内）</h3>
         <div class="grid" style="grid-template-columns:1fr 1fr">
-          <div>${data.risks.length ? data.risks.map(r=>`<div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><span>${esc(r.name)}</span><span class="tag ${r.risk==='red'?'red':'yellow'}">${riskInfo(r.risk).txt}</span></div>`).join('') : '<div class="empty">暂无风险项目</div>'}</div>
-          <div>${data.milestones.length ? data.milestones.map(m=>`<div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><div><b>${esc(m.title)}</b><div class="small muted">${esc(m.project_name)} · ${esc(m.due_date)}</div></div><span class="tag ${m.level==='overdue'?'red':m.level==='d7'?'yellow':'gray'}">${m.level==='overdue'?'逾期':m.level==='d7'?'临近':'正常'}</span></div>`).join('') : '<div class="empty">暂无临近里程碑</div>'}</div>
+          <div>${data.overdueMilestones.length ? data.overdueMilestones.map(m=>`<div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><div><b>${esc(m.name)}</b><div class="small muted">${esc(m.project_name)} · ${esc(m.due_date)}</div></div><span class="tag red">已逾期</span></div>`).join('') : '<div class="empty">暂无逾期节点</div>'}</div>
+          <div>${data.upcomingMilestones.length ? data.upcomingMilestones.map(m=>`<div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><div><b>${esc(m.name)}</b><div class="small muted">${esc(m.project_name)} · ${esc(m.due_date)}</div></div><span class="tag yellow">临近</span></div>`).join('') : '<div class="empty">暂无临近节点</div>'}</div>
         </div>
-      </div>`);
+      </div>`;
+  }
+
+  function pmoEightHtml(data) {
+    const key = window._pmoTableKey || 't1';
+    const meta = { t1: '表1 100-500万项目进度跟踪表', t2: '表2 500万以上重大项目风险表', t3: '表3 超期180天项目进度跟踪表', t4: '表4 项目质量检查表', t5: '表5 项目送审进度表', t6: '表6 收入跟踪表', t7: '表7 存量项目收入和欠费跟踪表', t8: '表8 项目变更跟踪表' };
+    const t = data.eightTables;
+    let thead = '', rowsHtml = '';
+    if (key === 't4') {
+      thead = '<tr><th>项目</th><th>类别</th><th>检查项</th><th>结果</th><th>检查人</th><th>时间</th></tr>';
+      rowsHtml = t.t4.map(c=>`<tr><td>${esc(c.project_name||'')}</td><td>${esc(c.category||'')}</td><td>${esc(c.item)}</td><td><span class="tag ${c.result==='通过'?'green':c.result==='不通过'?'red':'yellow'}">${esc(c.result||'待检查')}</span></td><td>${esc(c.checked_by||'')}</td><td class="small">${esc(c.checked_at||'')}</td></tr>`).join('');
+    } else if (key === 't5') {
+      thead = '<tr><th>项目</th><th>方向</th><th>类型</th><th>条款</th><th>计划送审</th><th>完成时间</th><th>状态</th></tr>';
+      rowsHtml = t.t5.map(a=>`<tr><td>${esc(a.project_name||'')}</td><td>${a.direction==='forward'?'前向':'后向'}</td><td>${esc(a.audit_type||'')}</td><td>${esc(a.clause||'')}</td><td>${esc(a.plan_date||'')}</td><td>${esc(a.done_date||'')}</td><td>${esc(a.status||'')}</td></tr>`).join('');
+    } else if (key === 't8') {
+      thead = '<tr><th>项目</th><th>变更类型</th><th>变更前</th><th>变更后</th><th>说明</th><th>变更人</th><th>时间</th></tr>';
+      rowsHtml = t.t8.map(c=>`<tr><td>${esc(c.project_name||'')}</td><td><span class="tag primary">${esc(c.change_type)}</span></td><td>${esc(c.before_value||'')}</td><td>${esc(c.after_value||'')}</td><td>${esc(c.detail||'')}</td><td>${esc(c.changed_by||'')}</td><td class="small">${esc(c.created_at||'')}</td></tr>`).join('');
+    } else if (key === 't6') {
+      thead = '<tr><th>项目</th><th>客户</th><th>PM</th><th class="num">合同金额(万)</th><th>收入类型</th><th>净额/全额</th><th>当前里程碑</th><th>下一里程碑</th><th>预计时间</th><th>截止</th></tr>';
+      rowsHtml = t.t6.map(p=>`<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.unit||'')}</td><td>${esc(p.pm||'')}</td><td class="num amount">${num(p.amount)}</td><td>${esc(p.income_type||'')}</td><td>${esc(p.net_or_full||'')}</td><td>${esc(p.milestone||'')}</td><td>${esc(p.next_milestone||'')}</td><td>${esc(p.next_milestone_date||'')}</td><td>${esc(p.deadline||'')}</td></tr>`).join('');
+    } else if (key === 't7') {
+      thead = '<tr><th>项目</th><th>客户</th><th class="num">合同金额(万)</th><th class="num">已支付</th><th class="num">欠费</th><th class="num">回款率</th><th>预计终验</th></tr>';
+      rowsHtml = t.t7.map(p=>`<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.customer_name||p.unit||'')}</td><td class="num">${num(p.amount)}</td><td class="num">${num(p.paid)}</td><td class="num" style="color:var(--risk-red);font-weight:600">${num(p.debt)}</td><td class="num">${num(p.paymentRatio)}%</td><td>${esc(p.expected_acceptance_date||'')}</td></tr>`).join('');
+    } else {
+      thead = '<tr><th>项目编号</th><th>项目名称</th><th>客户</th><th class="num">金额(万)</th><th>类型</th><th>PM</th><th>截止</th><th>当前里程碑</th><th>下一里程碑</th><th>预计时间</th><th>延期函</th><th>进度</th></tr>';
+      const list = key === 't1' ? t.t1 : key === 't2' ? t.t2 : t.t3;
+      rowsHtml = list.map(p=>`<tr><td>${esc(p.project_no||p.id)}</td><td><b>${esc(p.name)}</b></td><td>${esc(p.customer_name||p.unit||'')}</td><td class="num amount">${num(p.amount)}</td><td>${esc(p.type||'')}</td><td>${esc(p.pm||'')}</td><td>${esc(p.deadline||'')}</td><td>${esc(p.milestone||'')}</td><td>${esc(p.next_milestone||'')}</td><td>${esc(p.next_milestone_date||'')}</td><td>${esc(p.delay_extension||'')}</td><td class="muted">${esc(p.progress||'')}</td></tr>`).join('');
+    }
+    return `<div class="card card-pad">
+      <div class="row mb16" style="flex-wrap:wrap">
+        ${Object.keys(meta).map(k=>`<button class="btn sm ${key===k?'primary':''}" data-action="pmo-table" data-key="${k}">${meta[k]}</button>`).join('')}
+      </div>
+      <div class="table-wrap"><table class="table"><thead>${thead}</thead><tbody>${rowsHtml || '<tr><td colspan="12" class="empty">暂无数据</td></tr>'}</tbody></table></div>
+    </div>`;
+  }
+
+  function pmoMilestonesHtml(data) {
+    const projects = data.eightTables.t6.map((p) => ({ id: p.id, name: p.name }));
+    const pid = window._pmoMsProject || (projects[0] && projects[0].id) || '';
+    const list = data.milestones.filter((m) => !pid || m.project_id === pid);
+    const counts = { total: list.length, done: list.filter(m=>m.status==='done').length, overdue: list.filter(m=>m.status!=='done'&&m.due_date&&m.due_date<today()).length };
+    return `<div class="card card-pad">
+      <div class="row mb16"><label>项目：</label>
+        <select class="input" id="pmo-ms-project" style="width:300px"><option value="">全部项目</option>${projects.map(p=>`<option value="${esc(p.id)}" ${pid===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select>
+        <span class="tag primary">共 ${counts.total} 节点</span><span class="tag green">完成 ${counts.done}</span><span class="tag red">逾期 ${counts.overdue}</span>
+      </div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th class="num">#</th><th>节点（12步时间戳链）</th><th>阶段</th><th>计划日期</th><th>实际完成</th><th>状态</th><th>必留档案</th>${canWrite('project')?'<th></th>':''}</tr></thead>
+        <tbody>${list.map(m=>{ const st = m.status==='done' ? ['已完成','green'] : (m.due_date && m.due_date < today() ? ['已逾期','red'] : ['未完成','yellow']);
+          return `<tr><td class="num">${m.seq}</td><td><b>${esc(m.name)}</b></td><td>${esc(m.stage)}</td><td>${esc(m.due_date||'')}</td><td>${esc(m.done_date||'')}</td><td><span class="tag ${st[1]}">${st[0]}</span></td>
+          <td class="small muted">${(m.docs||[]).map(d=>esc(d)).join('、')}</td>
+          ${canWrite('project') ? `<td class="actions">${m.status==='done' ? `<button class="btn sm" data-action="ms-reset" data-id="${m.id}">重置</button>` : `<button class="btn sm primary" data-action="ms-done" data-id="${m.id}">标记完成</button>`}</td>` : ''}</tr>`; }).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
+  }
+
+  function pmoChecksHtml(data) {
+    return `<div class="card card-pad">
+      <div class="space-between mb16"><h3 style="margin:0;font-size:15px">项目质量检查（三必做 / AI 质检）</h3>${canWrite('project') ? `<button class="btn sm primary" data-action="new-check">${svg('plus')} 新增检查</button>` : ''}</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>项目</th><th>类别</th><th>检查项</th><th>结果</th><th>说明</th><th>检查人</th><th>时间</th>${canWrite('project')?'<th></th>':''}</tr></thead>
+        <tbody>${data.checks.map(c=>`<tr><td>${esc(c.project_name||'')}</td><td>${esc(c.category||'')}</td><td>${esc(c.item)}</td>
+          <td><span class="tag ${c.result==='通过'?'green':c.result==='不通过'?'red':'yellow'}">${esc(c.result||'待检查')}</span></td>
+          <td class="muted">${esc(c.remark||'')}</td><td>${esc(c.checked_by||'')}</td><td class="small">${esc(c.checked_at||'')}</td>
+          ${canWrite('project') ? `<td class="actions">${iconBtn('edit-check:' + c.id, 'edit', '编辑')}${iconBtn('delete-check:' + c.id, 'trash', '删除', 'danger')}</td>` : ''}</tr>`).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
+  }
+
+  function pmoAuditsHtml(data) {
+    return `<div class="card card-pad">
+      <div class="space-between mb16"><h3 style="margin:0;font-size:15px">项目送审进度（前后向审计）</h3>${canWrite('project') ? `<button class="btn sm primary" data-action="new-audit">${svg('plus')} 新增送审</button>` : ''}</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>项目</th><th>方向</th><th>审计类型</th><th>条款</th><th>计划送审</th><th>完成时间</th><th>状态</th>${canWrite('project')?'<th></th>':''}</tr></thead>
+        <tbody>${data.audits.map(a=>`<tr><td>${esc(a.project_name||'')}</td><td>${a.direction==='forward'?'前向':'后向'}</td><td>${esc(a.audit_type||'')}</td><td>${esc(a.clause||'')}</td><td>${esc(a.plan_date||'')}</td><td>${esc(a.done_date||'')}</td><td><span class="tag ${a.status==='已完成'?'green':'yellow'}">${esc(a.status||'')}</span></td>
+          ${canWrite('project') ? `<td class="actions">${iconBtn('edit-audit:' + a.id, 'edit', '编辑')}${iconBtn('delete-audit:' + a.id, 'trash', '删除', 'danger')}</td>` : ''}</tr>`).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
+  }
+
+  function pmoChangesHtml(data) {
+    return `<div class="card card-pad">
+      <div class="space-between mb16"><h3 style="margin:0;font-size:15px">项目变更台账</h3>${canWrite('project') ? `<button class="btn sm primary" data-action="new-change">${svg('plus')} 新增变更</button>` : ''}</div>
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>项目</th><th>变更类型</th><th>变更前</th><th>变更后</th><th>说明</th><th>变更人</th><th>时间</th>${canWrite('project')?'<th></th>':''}</tr></thead>
+        <tbody>${data.changes.map(c=>`<tr><td>${esc(c.project_name||'')}</td><td><span class="tag primary">${esc(c.change_type)}</span></td><td>${esc(c.before_value||'')}</td><td>${esc(c.after_value||'')}</td><td>${esc(c.detail||'')}</td><td>${esc(c.changed_by||'')}</td><td class="small">${esc(c.created_at||'')}</td>
+          ${canWrite('project') ? `<td class="actions">${iconBtn('delete-change:' + c.id, 'trash', '删除', 'danger')}</td>` : ''}</tr>`).join('')}
+        </tbody>
+      </table></div>
+    </div>`;
+  }
+
+  function pmoMembersHtml(data) {
+    return `<div class="grid" style="grid-template-columns:1fr 1fr">
+      <div class="card card-pad"><h3 style="margin:0 0 12px;font-size:15px">PMO 成员与权限</h3>
+        ${data.members.map(m=>`<div class="row" style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="avatar">${esc(m.name.slice(0,1))}</div><div class="flex1"><b>${esc(m.name)}</b><div class="small muted">${esc(m.username)}</div></div><span class="tag ${m.role==='admin'?'primary':'gray'}">${m.role==='admin'?'管理员':'只读'}</span></div>`).join('')}
+      </div>
+      <div class="card card-pad"><h3 style="margin:0 0 12px;font-size:15px">按 PM 分工</h3>
+        <div class="table-wrap"><table class="table"><thead><tr><th>PM</th><th class="num">项目数</th><th class="num">风险</th><th class="num">合同额(万)</th></tr></thead>
+        <tbody>${data.byPm.map(x=>`<tr><td><b>${esc(x.pm)}</b></td><td class="num">${x.count}</td><td class="num">${x.riskCount}</td><td class="num">${num(x.totalAmount)}</td></tr>`).join('')}</tbody></table></div>
+      </div>
+    </div>`;
+  }
+
+  // PMO 操作弹窗与处理
+  async function pmoProjectOptions() {
+    const projects = await api('/api/projects');
+    return projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
+  }
+
+  async function handleNewCheck() {
+    const opts = await pmoProjectOptions();
+    openModal('新增质量检查', `<form data-submit="save-check">
+      <div class="form-grid">
+        <div class="field"><label>项目 *</label><select class="input" name="project_id">${opts}</select></div>
+        <div class="field"><label>类别</label><select class="input" name="category"><option>三必做</option><option>AI质检</option><option>六必有</option><option>其他</option></select></div>
+        <div class="field full"><label>检查项 *</label><input class="input" name="item" placeholder="如：施工计划是否≥7个主任务"></div>
+        <div class="field"><label>结果</label><select class="input" name="result"><option>待检查</option><option>通过</option><option>不通过</option></select></div>
+        <div class="field full"><label>说明</label><input class="input" name="remark"></div>
+      </div></form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-check-btn' }]));
+  }
+  async function saveCheck(form) { try { await api('/api/pmo/checks', { method: 'POST', body: JSON.stringify(readForm(form)) }); toast('已保存'); closeModal(); await renderPmo(); } catch (e) { toast(e.message, true); } }
+  async function handleEditCheck(id) {
+    const list = await api('/api/pmo/checks'); const c = list.find(x=>String(x.id)===String(id)); if (!c) return;
+    openModal('编辑检查', `<form data-submit="update-check" data-id="${id}">
+      <div class="form-grid">
+        <div class="field"><label>类别</label><input class="input" name="category" value="${esc(c.category||'')}"></div>
+        <div class="field"><label>结果</label><select class="input" name="result">${['待检查','通过','不通过'].map(r=>`<option ${c.result===r?'selected':''}>${r}</option>`).join('')}</select></div>
+        <div class="field full"><label>检查项</label><input class="input" name="item" value="${esc(c.item)}"></div>
+        <div class="field full"><label>说明</label><input class="input" name="remark" value="${esc(c.remark||'')}"></div>
+      </div></form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-check-btn' }]));
+  }
+  async function updateCheck(form, id) { try { await api('/api/pmo/checks/' + id, { method: 'PUT', body: JSON.stringify(readForm(form)) }); toast('已更新'); closeModal(); await renderPmo(); } catch (e) { toast(e.message, true); } }
+  async function handleDeleteCheck(id) { openModal('删除确认', '<p>确认删除该检查记录？</p>', modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认删除', cls: 'danger', action: 'confirm-delete-check', id: 'del-check-btn' }]), ()=>{ window._delCheckId = id; }); }
+  async function confirmDeleteCheck() { try { await api('/api/pmo/checks/' + window._delCheckId, { method: 'DELETE' }); toast('已删除'); closeModal(); await renderPmo(); } catch (e) { toast(e.message, true); } }
+
+  async function handleNewAudit() {
+    const opts = await pmoProjectOptions();
+    openModal('新增送审记录', `<form data-submit="save-audit">
+      <div class="form-grid">
+        <div class="field"><label>项目 *</label><select class="input" name="project_id">${opts}</select></div>
+        <div class="field"><label>方向</label><select class="input" name="direction"><option value="forward">前向</option><option value="backward">后向</option></select></div>
+        <div class="field"><label>审计类型</label><input class="input" name="audit_type" placeholder="必审/跟踪审计/结算审计"></div>
+        <div class="field"><label>审计条款</label><input class="input" name="clause"></div>
+        <div class="field"><label>计划送审时间</label><input class="input" type="date" name="plan_date"></div>
+        <div class="field"><label>完成时间</label><input class="input" type="date" name="done_date"></div>
+        <div class="field full"><label>状态</label><select class="input" name="status"><option>待送审</option><option>已送审</option><option>已完成</option></select></div>
+      </div></form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-audit-btn' }]));
+  }
+  async function saveAudit(form) { try { await api('/api/pmo/audits', { method: 'POST', body: JSON.stringify(readForm(form)) }); toast('已保存'); closeModal(); await renderPmo(); } catch (e) { toast(e.message, true); } }
+  async function handleEditAudit(id) {
+    const list = await api('/api/pmo/audits'); const a = list.find(x=>String(x.id)===String(id)); if (!a) return;
+    openModal('编辑送审', `<form data-submit="update-audit" data-id="${id}">
+      <div class="form-grid">
+        <div class="field"><label>方向</label><select class="input" name="direction"><option value="forward" ${a.direction==='forward'?'selected':''}>前向</option><option value="backward" ${a.direction==='backward'?'selected':''}>后向</option></select></div>
+        <div class="field"><label>审计类型</label><input class="input" name="audit_type" value="${esc(a.audit_type||'')}"></div>
+        <div class="field"><label>条款</label><input class="input" name="clause" value="${esc(a.clause||'')}"></div>
+        <div class="field"><label>计划送审</label><input class="input" type="date" name="plan_date" value="${esc(a.plan_date||'')}"></div>
+        <div class="field"><label>完成时间</label><input class="input" type="date" name="done_date" value="${esc(a.done_date||'')}"></div>
+        <div class="field"><label>状态</label><select class="input" name="status">${['待送审','已送审','已完成'].map(s=>`<option ${a.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div></form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-audit-btn' }]));
+  }
+  async function updateAudit(form, id) { try { await api('/api/pmo/audits/' + id, { method: 'PUT', body: JSON.stringify(readForm(form)) }); toast('已更新'); closeModal(); await renderPmo(); } catch (e) { toast(e.message, true); } }
+  async function handleDeleteAudit(id) { openModal('删除确认', '<p>确认删除该送审记录？</p>', modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认删除', cls: 'danger', action: 'confirm-delete-audit', id: 'del-audit-btn' }]), ()=>{ window._delAuditId = id; }); }
+  async function confirmDeleteAudit() { try { await api('/api/pmo/audits/' + window._delAuditId, { method: 'DELETE' }); toast('已删除'); closeModal(); await renderPmo(); } catch (e) { toast(e.message, true); } }
+
+  async function handleNewChange() {
+    const opts = await pmoProjectOptions();
+    openModal('新增变更记录', `<form data-submit="save-change">
+      <div class="form-grid">
+        <div class="field"><label>项目 *</label><select class="input" name="project_id">${opts}</select></div>
+        <div class="field"><label>变更类型 *</label><select class="input" name="change_type"><option>合同金额变更</option><option>成本变更</option><option>品牌变更</option><option>型号变更</option><option>方案变更</option><option>收益变化</option><option>工期变更</option></select></div>
+        <div class="field"><label>变更前</label><input class="input" name="before_value"></div>
+        <div class="field"><label>变更后</label><input class="input" name="after_value"></div>
+        <div class="field full"><label>详细说明</label><textarea class="input" name="detail" rows="3"></textarea></div>
+      </div></form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-change-btn' }]));
+  }
+  async function saveChange(form) { try { await api('/api/pmo/changes', { method: 'POST', body: JSON.stringify(readForm(form)) }); toast('已保存'); closeModal(); await renderPmo(); } catch (e) { toast(e.message, true); } }
+  async function handleDeleteChange(id) { openModal('删除确认', '<p>确认删除该变更记录？</p>', modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认删除', cls: 'danger', action: 'confirm-delete-change', id: 'del-change-btn' }]), ()=>{ window._delChangeId = id; }); }
+  async function confirmDeleteChange() { try { await api('/api/pmo/changes/' + window._delChangeId, { method: 'DELETE' }); toast('已删除'); closeModal(); await renderPmo(); } catch (e) { toast(e.message, true); } }
+
+  async function handleMsDone(id, done) {
+    try {
+      const body = done ? { status: 'done', done_date: today() } : { status: 'pending', done_date: null };
+      await api('/api/milestones/' + id, { method: 'PUT', body: JSON.stringify(body) });
+      toast(done ? '里程碑已标记完成' : '里程碑已重置');
+      if ((location.hash || '').includes('project-stages')) await renderProjectStages();
+      else await renderPmo();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleQaCheck(el) {
+    const project = await getCurrentProject();
+    if (!project) return toast('请先选择项目', true);
+    try {
+      await api('/api/pmo/checks', { method: 'POST', body: JSON.stringify({ project_id: project.id, category: 'AI质检·' + (el.dataset.category || ''), item: el.dataset.item, result: el.dataset.result }) });
+      toast('质检结果已记录');
+    } catch (e) { toast(e.message, true); }
   }
 
   // ---------------- knowledge base ----------------
@@ -2348,6 +2640,7 @@
     'new-docfile': handleNewDocfile,
     'edit-docfile'(el) { handleEditDocfile(actionArg(el)); },
     'delete-docfile'(el) { handleDeleteDocfile(actionArg(el)); },
+    'rebuild-folders'(el) { handleRebuildFolders(actionArg(el)); },
     'ai-risk-review': handleAiRiskReview,
     'stage-upload': handleStageUpload,
     'ai-extract': handleAiExtract,
@@ -2374,6 +2667,19 @@
     'view-kb-article'(el) { handleViewKbArticle(actionArg(el)); },
     'edit-kb-article'(el) { handleEditKbArticle(actionArg(el)); },
     'delete-kb-article'(el) { handleDeleteKbArticle(actionArg(el)); },
+    'pmo-tab'(el) { window._pmoTab = el.dataset.tab; renderPmo(); },
+    'pmo-table'(el) { window._pmoTableKey = el.dataset.key; renderPmo(); },
+    'ms-done'(el) { handleMsDone(actionArg(el), true); },
+    'ms-reset'(el) { handleMsDone(actionArg(el), false); },
+    'qa-check'(el) { handleQaCheck(el); },
+    'new-check': handleNewCheck,
+    'edit-check'(el) { handleEditCheck(actionArg(el)); },
+    'delete-check'(el) { handleDeleteCheck(actionArg(el)); },
+    'new-audit': handleNewAudit,
+    'edit-audit'(el) { handleEditAudit(actionArg(el)); },
+    'delete-audit'(el) { handleDeleteAudit(actionArg(el)); },
+    'new-change': handleNewChange,
+    'delete-change'(el) { handleDeleteChange(actionArg(el)); },
     'new-ai-model': handleNewAiModel,
     'edit-ai-model'(el) { handleEditAiModel(actionArg(el)); },
     'delete-ai-model'(el) { handleDeleteAiModel(actionArg(el)); },
@@ -2391,10 +2697,14 @@
     'confirm-delete-contract': confirmDeleteContract,
     'confirm-delete-folder': confirmDeleteFolder,
     'confirm-delete-docfile': confirmDeleteDocfile,
+    'confirm-rebuild-folders': confirmRebuildFolders,
     'confirm-delete-back-contract': confirmDeleteBackContract,
     'confirm-delete-template': confirmDeleteTemplate,
     'confirm-delete-kb-category': confirmDeleteKbCategory,
     'confirm-delete-kb-article': confirmDeleteKbArticle,
+    'confirm-delete-check': confirmDeleteCheck,
+    'confirm-delete-audit': confirmDeleteAudit,
+    'confirm-delete-change': confirmDeleteChange,
     'confirm-delete-ai-model': confirmDeleteAiModel,
     'confirm-delete-menu-item': confirmDeleteMenuItem,
     'confirm-delete-user': confirmDeleteUser
@@ -2426,7 +2736,12 @@
     'save-kb-category': saveKbCategory,
     'update-kb-category': (form) => updateKbCategory(form, form.dataset.id),
     'save-kb-article': saveKbArticle,
-    'update-kb-article': (form) => updateKbArticle(form, form.dataset.id)
+    'update-kb-article': (form) => updateKbArticle(form, form.dataset.id),
+    'save-check': saveCheck,
+    'update-check': (form) => updateCheck(form, form.dataset.id),
+    'save-audit': saveAudit,
+    'update-audit': (form) => updateAudit(form, form.dataset.id),
+    'save-change': saveChange
   };
 
   document.addEventListener('click', (e) => {
@@ -2452,6 +2767,10 @@
   });
 
   document.addEventListener('change', (e) => {
+    if (e.target.matches('#pmo-ms-project')) {
+      window._pmoMsProject = e.target.value;
+      return renderPmo();
+    }
     if (e.target.matches('#contract-project')) {
       window._contractProjectId = e.target.value;
       return renderContracts();

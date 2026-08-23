@@ -300,13 +300,15 @@ function registerRoutes(app, upload) {
     if (!b.name) return sendError(res, 400, '项目名称不能为空');
     const id = b.id || ('p' + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36));
     if (db.prepare('SELECT id FROM projects WHERE id = ?').get(id)) return sendError(res, 409, '项目编号已存在');
-    db.prepare(`INSERT INTO projects(id,name,project_no,group_opportunity_code,approval_complete_date,start_date,expected_acceptance_date,sign_archive_date,our_unit,unit,customer_name,forward_contract_code,forward_contract_name,forward_contract_amount,forward_sign_date,backward_contract_code,backward_contract_name,backward_unit_name,backward_contract_amount,backward_sign_date,amount,paid,risk,stage,type,sign_date,deadline,pm,remark,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    db.prepare(`INSERT INTO projects(id,name,project_no,group_opportunity_code,approval_complete_date,start_date,expected_acceptance_date,sign_archive_date,our_unit,unit,customer_name,forward_contract_code,forward_contract_name,forward_contract_amount,forward_sign_date,backward_contract_code,backward_contract_name,backward_unit_name,backward_contract_amount,backward_sign_date,income_type,net_or_full,milestone,next_milestone,next_milestone_date,progress,delay_extension,delay_days,amount,paid,risk,stage,type,sign_date,deadline,pm,remark,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, b.name, b.project_no || '', b.group_opportunity_code || '', b.approval_complete_date || null, b.start_date || null,
         b.expected_acceptance_date || null, b.sign_archive_date || null, b.our_unit || '', b.unit || '',
         b.customer_name || b.unit || '', b.forward_contract_code || '', b.forward_contract_name || '',
         Number(b.forward_contract_amount || 0), b.forward_sign_date || null, b.backward_contract_code || '', b.backward_contract_name || '',
         b.backward_unit_name || '', Number(b.backward_contract_amount || 0), b.backward_sign_date || null,
+        b.income_type || '', b.net_or_full || '', b.milestone || '', b.next_milestone || '', b.next_milestone_date || null,
+        b.progress || '', b.delay_extension || '', Number(b.delay_days || 0),
         Number(b.amount || 0), Number(b.paid || 0), b.risk || 'green', b.stage || '启动',
         b.type || '', b.sign_date || null, b.deadline || null, b.pm || '陈志远', b.remark || '', now(), now());
     seedDocFolders(id);
@@ -317,7 +319,7 @@ function registerRoutes(app, upload) {
     const p = project(req.params.id);
     if (!p) return sendError(res, 404, '项目不存在');
     const b = req.body || {};
-    db.prepare(`UPDATE projects SET name=?, project_no=?, group_opportunity_code=?, approval_complete_date=?, start_date=?, expected_acceptance_date=?, sign_archive_date=?, our_unit=?, unit=?, customer_name=?, forward_contract_code=?, forward_contract_name=?, forward_contract_amount=?, forward_sign_date=?, backward_contract_code=?, backward_contract_name=?, backward_unit_name=?, backward_contract_amount=?, backward_sign_date=?, amount=?, paid=?, risk=?, stage=?, type=?, sign_date=?, deadline=?, pm=?, remark=?, updated_at=?
+    db.prepare(`UPDATE projects SET name=?, project_no=?, group_opportunity_code=?, approval_complete_date=?, start_date=?, expected_acceptance_date=?, sign_archive_date=?, our_unit=?, unit=?, customer_name=?, forward_contract_code=?, forward_contract_name=?, forward_contract_amount=?, forward_sign_date=?, backward_contract_code=?, backward_contract_name=?, backward_unit_name=?, backward_contract_amount=?, backward_sign_date=?, income_type=?, net_or_full=?, milestone=?, next_milestone=?, next_milestone_date=?, progress=?, delay_extension=?, delay_days=?, amount=?, paid=?, risk=?, stage=?, type=?, sign_date=?, deadline=?, pm=?, remark=?, updated_at=?
       WHERE id=?`)
       .run(b.name ?? p.name, b.project_no ?? p.project_no, b.group_opportunity_code ?? p.group_opportunity_code,
         b.approval_complete_date ?? p.approval_complete_date, b.start_date ?? p.start_date,
@@ -327,7 +329,11 @@ function registerRoutes(app, upload) {
         Number(b.forward_contract_amount ?? p.forward_contract_amount), b.forward_sign_date ?? p.forward_sign_date,
         b.backward_contract_code ?? p.backward_contract_code, b.backward_contract_name ?? p.backward_contract_name,
         b.backward_unit_name ?? p.backward_unit_name, Number(b.backward_contract_amount ?? p.backward_contract_amount),
-        b.backward_sign_date ?? p.backward_sign_date, Number(b.amount ?? p.amount), Number(b.paid ?? p.paid),
+        b.backward_sign_date ?? p.backward_sign_date,
+        b.income_type ?? p.income_type, b.net_or_full ?? p.net_or_full, b.milestone ?? p.milestone,
+        b.next_milestone ?? p.next_milestone, b.next_milestone_date ?? p.next_milestone_date, b.progress ?? p.progress,
+        b.delay_extension ?? p.delay_extension, Number(b.delay_days ?? p.delay_days),
+        Number(b.amount ?? p.amount), Number(b.paid ?? p.paid),
         b.risk ?? p.risk, b.stage ?? p.stage, b.type ?? p.type, b.sign_date ?? p.sign_date, b.deadline ?? p.deadline,
         b.pm ?? p.pm, b.remark ?? p.remark, now(), req.params.id);
     res.json(deriveProject(project(req.params.id)));
@@ -838,18 +844,133 @@ function registerRoutes(app, upload) {
     }));
     const risks = projects.filter((p) => p.risk !== 'green').map((p) => ({ id: p.id, name: p.name, risk: p.risk, remark: p.remark, pm: p.pm }));
     const t = today();
-    const milestones = db.prepare('SELECT * FROM fund_in WHERE plan_date IS NOT NULL AND recv_date IS NULL ORDER BY plan_date LIMIT 30').all()
-      .map((f) => {
-        const p = project(f.project_id);
-        const diff = Math.ceil((new Date(f.plan_date) - new Date(t)) / 86400000);
-        return { id: f.id, project_id: f.project_id, project_name: p ? p.name : '', title: f.name, due_date: f.plan_date, amount: f.amount, level: f.plan_date < t ? 'overdue' : diff <= 7 ? 'd7' : 'normal' };
-      });
-    res.json({ members, byPm, risks, milestones, totals: {
-      projectCount: projects.length,
-      riskCount: projects.filter((p) => p.risk === 'red').length,
-      totalAmount: Math.round(projects.reduce((s, p) => s + (p.amount || 0), 0) * 100) / 100
-    } });
+    const ms = db.prepare('SELECT * FROM project_milestones ORDER BY project_id, seq').all()
+      .map((m) => ({ ...m, docs: safeJson(m.docs, []) }));
+    const overdueMs = ms.filter((m) => m.status !== 'done' && m.due_date && m.due_date < t)
+      .map((m) => { const p = project(m.project_id); return { ...m, project_name: p ? p.name : '' }; });
+    const upcomingMs = ms.filter((m) => m.status !== 'done' && m.due_date && m.due_date >= t && m.due_date <= addDays(t, 14))
+      .map((m) => { const p = project(m.project_id); return { ...m, project_name: p ? p.name : '' }; });
+    const checks = db.prepare('SELECT c.*, p.name AS project_name FROM project_checks c LEFT JOIN projects p ON p.id = c.project_id ORDER BY c.created_at DESC').all();
+    const audits = db.prepare('SELECT a.*, p.name AS project_name FROM project_audits a LEFT JOIN projects p ON p.id = a.project_id ORDER BY a.created_at DESC').all();
+    const changes = db.prepare('SELECT c.*, p.name AS project_name FROM project_changes c LEFT JOIN projects p ON p.id = c.project_id ORDER BY c.created_at DESC').all();
+    const overdue180 = projects.filter((p) => p.deadline && p.deadline < addDays(t, -180));
+    const debt = projects.filter((p) => (p.amount || 0) - (p.paid || 0) > 0)
+      .map((p) => ({ ...p, debt: Math.round((p.amount - p.paid) * 100) / 100 }));
+    const eightTables = {
+      t1: projects.filter((p) => p.amount >= 100 && p.amount < 500),
+      t2: projects.filter((p) => p.amount >= 500),
+      t3: overdue180,
+      t4: checks,
+      t5: audits,
+      t6: projects.map((p) => ({ id: p.id, name: p.name, unit: p.customer_name || p.unit, pm: p.pm, amount: p.amount, income_type: p.income_type, net_or_full: p.net_or_full, milestone: p.milestone, next_milestone: p.next_milestone, next_milestone_date: p.next_milestone_date, deadline: p.deadline })),
+      t7: debt,
+      t8: changes
+    };
+    res.json({
+      members, byPm, risks,
+      milestones: ms,
+      overdueMilestones: overdueMs,
+      upcomingMilestones: upcomingMs,
+      checks, audits, changes, eightTables,
+      totals: {
+        projectCount: projects.length,
+        riskCount: projects.filter((p) => p.risk === 'red').length,
+        totalAmount: Math.round(projects.reduce((s, p) => s + (p.amount || 0), 0) * 100) / 100,
+        millionCount: projects.filter((p) => p.amount >= 100).length,
+        over500Count: projects.filter((p) => p.amount >= 500).length,
+        overdue180Count: overdue180.length,
+        debtTotal: Math.round(debt.reduce((s, p) => s + p.debt, 0) * 100) / 100,
+        auditPending: audits.filter((a) => a.status === '待送审').length,
+        checkPending: checks.filter((c) => c.result !== '通过').length
+      }
+    });
   });
+
+  // 项目里程碑
+  app.get('/api/projects/:id/milestones', requireAuth, (req, res) => {
+    res.json(db.prepare('SELECT * FROM project_milestones WHERE project_id = ? ORDER BY seq').all(req.params.id).map((m) => ({ ...m, docs: safeJson(m.docs, []) })));
+  });
+
+  app.put('/api/milestones/:id', requireAuth, requireWrite('project'), (req, res) => {
+    const cur = db.prepare('SELECT * FROM project_milestones WHERE id = ?').get(Number(req.params.id));
+    if (!cur) return sendError(res, 404, '里程碑不存在');
+    const b = req.body || {};
+    db.prepare('UPDATE project_milestones SET status=?, done_date=?, due_date=?, note=?, updated_at=? WHERE id=?')
+      .run(b.status ?? cur.status, b.done_date ?? cur.done_date, b.due_date ?? cur.due_date, b.note ?? cur.note, now(), cur.id);
+    res.json(db.prepare('SELECT * FROM project_milestones WHERE id = ?').get(cur.id));
+  });
+
+  // 质量检查
+  app.get('/api/pmo/checks', requireAuth, (req, res) => {
+    res.json(db.prepare('SELECT c.*, p.name AS project_name FROM project_checks c LEFT JOIN projects p ON p.id = c.project_id ORDER BY c.created_at DESC').all());
+  });
+  app.post('/api/pmo/checks', requireAuth, requireWrite('project'), (req, res) => {
+    const b = req.body || {};
+    if (!b.project_id || !b.item) return sendError(res, 400, '项目与检查项不能为空');
+    const r = db.prepare('INSERT INTO project_checks(project_id,category,item,result,remark,checked_by,checked_at) VALUES(?,?,?,?,?,?,?)')
+      .run(b.project_id, b.category || '', b.item, b.result || '待检查', b.remark || '', req.user ? req.user.name : '', now());
+    res.json(db.prepare('SELECT * FROM project_checks WHERE id = ?').get(Number(r.lastInsertRowid)));
+  });
+  app.put('/api/pmo/checks/:id', requireAuth, requireWrite('project'), (req, res) => {
+    const cur = db.prepare('SELECT * FROM project_checks WHERE id = ?').get(Number(req.params.id));
+    if (!cur) return sendError(res, 404, '检查记录不存在');
+    const b = req.body || {};
+    db.prepare('UPDATE project_checks SET category=?, item=?, result=?, remark=?, checked_by=?, checked_at=? WHERE id=?')
+      .run(b.category ?? cur.category, b.item ?? cur.item, b.result ?? cur.result, b.remark ?? cur.remark,
+        req.user ? req.user.name : cur.checked_by, now(), cur.id);
+    res.json(db.prepare('SELECT * FROM project_checks WHERE id = ?').get(cur.id));
+  });
+  app.delete('/api/pmo/checks/:id', requireAuth, requireWrite('project'), (req, res) => {
+    db.prepare('DELETE FROM project_checks WHERE id = ?').run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // 送审进度
+  app.get('/api/pmo/audits', requireAuth, (req, res) => {
+    res.json(db.prepare('SELECT a.*, p.name AS project_name FROM project_audits a LEFT JOIN projects p ON p.id = a.project_id ORDER BY a.created_at DESC').all());
+  });
+  app.post('/api/pmo/audits', requireAuth, requireWrite('project'), (req, res) => {
+    const b = req.body || {};
+    if (!b.project_id) return sendError(res, 400, '项目不能为空');
+    const r = db.prepare('INSERT INTO project_audits(project_id,direction,audit_type,clause,plan_date,done_date,status,remark) VALUES(?,?,?,?,?,?,?,?)')
+      .run(b.project_id, b.direction || 'forward', b.audit_type || '', b.clause || '', b.plan_date || null, b.done_date || null, b.status || '待送审', b.remark || '');
+    res.json(db.prepare('SELECT * FROM project_audits WHERE id = ?').get(Number(r.lastInsertRowid)));
+  });
+  app.put('/api/pmo/audits/:id', requireAuth, requireWrite('project'), (req, res) => {
+    const cur = db.prepare('SELECT * FROM project_audits WHERE id = ?').get(Number(req.params.id));
+    if (!cur) return sendError(res, 404, '送审记录不存在');
+    const b = req.body || {};
+    db.prepare('UPDATE project_audits SET direction=?, audit_type=?, clause=?, plan_date=?, done_date=?, status=?, remark=? WHERE id=?')
+      .run(b.direction ?? cur.direction, b.audit_type ?? cur.audit_type, b.clause ?? cur.clause, b.plan_date ?? cur.plan_date,
+        b.done_date ?? cur.done_date, b.status ?? cur.status, b.remark ?? cur.remark, cur.id);
+    res.json(db.prepare('SELECT * FROM project_audits WHERE id = ?').get(cur.id));
+  });
+  app.delete('/api/pmo/audits/:id', requireAuth, requireWrite('project'), (req, res) => {
+    db.prepare('DELETE FROM project_audits WHERE id = ?').run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // 变更台账
+  app.get('/api/pmo/changes', requireAuth, (req, res) => {
+    res.json(db.prepare('SELECT c.*, p.name AS project_name FROM project_changes c LEFT JOIN projects p ON p.id = c.project_id ORDER BY c.created_at DESC').all());
+  });
+  app.post('/api/pmo/changes', requireAuth, requireWrite('project'), (req, res) => {
+    const b = req.body || {};
+    if (!b.project_id || !b.change_type) return sendError(res, 400, '项目与变更类型不能为空');
+    const r = db.prepare('INSERT INTO project_changes(project_id,change_type,before_value,after_value,detail,changed_by) VALUES(?,?,?,?,?,?)')
+      .run(b.project_id, b.change_type, b.before_value || '', b.after_value || '', b.detail || '', req.user ? req.user.name : '');
+    res.json(db.prepare('SELECT * FROM project_changes WHERE id = ?').get(Number(r.lastInsertRowid)));
+  });
+  app.delete('/api/pmo/changes/:id', requireAuth, requireWrite('project'), (req, res) => {
+    db.prepare('DELETE FROM project_changes WHERE id = ?').run(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  function addDays(d, days) {
+    const date = new Date(d);
+    date.setDate(date.getDate() + days);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
 
   // ---------------- knowledge base ----------------
   app.get('/api/kb/categories', requireAuth, (req, res) => {

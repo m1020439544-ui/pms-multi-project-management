@@ -3,8 +3,8 @@ const path = require('node:path');
 const { execSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
-const dist = path.join(root, 'dist', 'pms-v1.0.2');
-const zip = path.join(root, 'dist', '智项目管理系统-V1.0.2交付包.zip');
+const dist = path.join(root, 'dist', 'pms-v1.0.3');
+const zip = path.join(root, 'dist', '智项目管理系统-V1.0.3交付包.zip');
 
 fs.rmSync(path.join(root, 'dist'), { recursive: true, force: true });
 fs.mkdirSync(dist, { recursive: true });
@@ -19,6 +19,6 @@ console.log('installing production dependencies (omit dev)...');
 execSync('npm install --omit=dev --no-audit --no-fund', { cwd: dist, stdio: 'inherit', shell: true });
 
 console.log('compressing...');
-execSync(`tar -a -cf "${zip}" -C "${path.dirname(dist)}" pms-v1.0.2`, { shell: true });
+execSync(`tar -a -cf "${zip}" -C "${path.dirname(dist)}" pms-v1.0.3`, { shell: true });
 const stat = fs.statSync(zip);
 console.log('package built:', zip, (stat.size / 1024 / 1024).toFixed(1), 'MB');

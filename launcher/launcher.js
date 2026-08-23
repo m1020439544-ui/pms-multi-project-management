@@ -9,6 +9,7 @@ const DATA = path.join(ROOT, 'data');
 const PMS_PORT = Number(process.env.PORT || 3000);
 const LAUNCHER_PORT = Number(process.env.LAUNCHER_PORT || 8899);
 const PID_FILE = path.join(DATA, 'pms.pid');
+const PORT_FILE = path.join(DATA, 'pms.port');
 const LOG_FILE = path.join(DATA, 'pms.log');
 const INSTALL_LOG = path.join(DATA, 'install.log');
 const APP_VERSION = (() => {
@@ -25,6 +26,10 @@ function readPid() {
 function isRunning(pid) {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; } catch (e) { return false; }
+}
+
+function currentPmsPort() {
+  try { return Number(fs.readFileSync(PORT_FILE, 'utf8').trim()) || PMS_PORT; } catch (e) { return PMS_PORT; }
 }
 
 function tailFile(file, lines = 200) {
@@ -58,7 +63,7 @@ const server = http.createServer((req, res) => {
       version: APP_VERSION,
       running: isRunning(pid),
       pid: pid || null,
-      pmsPort: PMS_PORT,
+      pmsPort: currentPmsPort(),
       launcherPort: LAUNCHER_PORT,
       nodeVersion: process.version,
       platform: `${os.platform()} ${os.arch()}`,

@@ -2,13 +2,14 @@ const express = require('express');
 const path = require('node:path');
 const fs = require('node:fs');
 const multer = require('multer');
-const { seed, UPLOAD_DIR } = require('./db');
+const { seed, UPLOAD_DIR, DATA_DIR } = require('./db');
 const { registerRoutes } = require('./routes');
 const { requireAuth } = require('./auth');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const VERSION = '1.0.2';
+const PORT = Number(process.env.PORT || 3000);
+const VERSION = '1.0.3';
+const PORT_FILE = path.join(DATA_DIR, 'pms.port');
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -60,7 +61,21 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || '服务器内部错误' });
 });
 
-app.listen(PORT, () => {
-  console.log(`智项目 · 多项目管理系统 V${VERSION} 已启动：http://localhost:${PORT}`);
-  console.log(`演示账号：pmo / pmo2026（管理员），viewer / pmo2026（只读）`);
-});
+function startServer(port, attempts = 0) {
+  const server = app.listen(port, () => {
+    try { fs.writeFileSync(PORT_FILE, String(port)); } catch (e) {}
+    console.log(`智项目 · 多项目管理系统 V${VERSION} 已启动：http://localhost:${port}`);
+    console.log(`演示账号：pmo / pmo2026（管理员），viewer / pmo2026（只读）`);
+  });
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE' && attempts < 10) {
+      console.log(`端口 ${port} 已被占用，自动改用端口 ${port + 1} …`);
+      startServer(port + 1, attempts + 1);
+    } else {
+      console.error(`启动失败：${err.message}`);
+      process.exit(1);
+    }
+  });
+}
+
+startServer(PORT);

@@ -8,9 +8,16 @@ const { requireAuth } = require('./auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const VERSION = '1.0.2';
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// 健康检查（供鸿蒙/浏览器跨域连通性检测）
+app.get('/api/health', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.json({ ok: true, name: '智项目 · 多项目管理系统', version: VERSION, time: new Date().toISOString() });
+});
 
 // 静态资源：同源前端
 const publicDir = path.join(__dirname, '..', 'public');
@@ -54,6 +61,6 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`智项目 · 多项目管理系统 V1.0.1 已启动：http://localhost:${PORT}`);
+  console.log(`智项目 · 多项目管理系统 V${VERSION} 已启动：http://localhost:${PORT}`);
   console.log(`演示账号：pmo / pmo2026（管理员），viewer / pmo2026（只读）`);
 });

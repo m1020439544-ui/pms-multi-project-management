@@ -11,6 +11,10 @@ const LAUNCHER_PORT = Number(process.env.LAUNCHER_PORT || 8899);
 const PID_FILE = path.join(DATA, 'pms.pid');
 const LOG_FILE = path.join(DATA, 'pms.log');
 const INSTALL_LOG = path.join(DATA, 'install.log');
+const APP_VERSION = (() => {
+  try { return fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim().replace(/^pms-/, ''); }
+  catch (e) { return '1.0.2'; }
+})();
 
 fs.mkdirSync(path.join(DATA, 'uploads'), { recursive: true });
 
@@ -30,6 +34,17 @@ function tailFile(file, lines = 200) {
   } catch (e) { return ''; }
 }
 
+function lanIps() {
+  const out = [];
+  const ifs = os.networkInterfaces();
+  for (const name of Object.keys(ifs)) {
+    for (const info of ifs[name] || []) {
+      if (info.family === 'IPv4' && !info.internal) out.push(info.address);
+    }
+  }
+  return out;
+}
+
 function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(obj));
@@ -40,13 +55,14 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && url === '/api/status') {
     const pid = readPid();
     return json(res, 200, {
-      version: '1.0.1',
+      version: APP_VERSION,
       running: isRunning(pid),
       pid: pid || null,
       pmsPort: PMS_PORT,
       launcherPort: LAUNCHER_PORT,
       nodeVersion: process.version,
-      platform: `${os.platform()} ${os.arch()}`
+      platform: `${os.platform()} ${os.arch()}`,
+      lanIps: lanIps()
     });
   }
   if (req.method === 'POST' && url === '/api/install') {

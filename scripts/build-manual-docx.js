@@ -3,8 +3,8 @@ const path = require('node:path');
 const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = require('docx');
 
 const lines = [
-  ['h1', '智项目 · 多项目管理系统 V1.0.1 操作指导手册'],
-  ['p', '本手册适用于 V1.0.1 交付版本，涵盖系统简介、跨平台部署（Windows x64 / Windows ARM11 / Linux / HarmonyOS 7 PC）、图形化启动界面、各模块操作、数据备份与常见问题。'],
+  ['h1', '智项目 · 多项目管理系统 V1.0.2 操作指导手册'],
+  ['p', '本手册适用于 V1.0.2 交付版本，涵盖系统简介、跨平台部署（Windows x64 / Windows ARM11 / Linux / HarmonyOS 7 PC）、图形化启动界面、各模块操作、数据备份与常见问题。'],
   ['h2', '1. 系统简介'],
   ['p', '系统采用 B/S 架构：服务端基于 Node.js 22.5+ 与内置 SQLite，数据与附件全部保存在本地；客户端使用现代浏览器访问。覆盖项目全生命周期、PMO 管理、合同管理、文档中心、模板管理、知识库、提醒中心与 AI 能力。'],
   ['h2', '2. 运行环境要求'],
@@ -18,6 +18,8 @@ const lines = [
   ['li', '一键后台启动：HarmonyOS/Linux 执行 ./一键启动.sh（自动装依赖并后台运行）；Windows 双击 start-bg.bat（隐藏窗口后台运行）。'],
   ['li', '停止后台服务：Linux 执行 ./stop.sh；Windows 双击 stop.bat。日志位于 data/pms.log。'],
   ['li', '图形化启动界面：Windows 双击 启动界面.bat；HarmonyOS/Linux 执行 启动界面.sh。界面提供安装/启动/停止/打开/日志/状态按钮，无需输入命令。'],
+  ['h3', 'HarmonyOS 7 PC 特别说明'],
+  ['p', '鸿蒙 7 PC 基于 OpenHarmony 内核，不能直接运行 Node.js/Linux 脚本，因此 .sh/.bat 在纯鸿蒙环境无法安装与启动。推荐使用浏览器访问：在另一台电脑运行服务端，鸿蒙 PC 打开交付包内「鸿蒙浏览器访问.html」，填入服务器局域网地址（如 http://192.168.1.10:3000），检测连接后打开系统。若鸿蒙 PC 提供 Linux 容器/开发者模式，才可使用 启动界面.sh 本地运行。'],
   ['h2', '4. 登录'],
   ['li', '管理员（PMO）：pmo / pmo2026，拥有全部功能。'],
   ['li', '只读用户：viewer / pmo2026，仅可查看。'],

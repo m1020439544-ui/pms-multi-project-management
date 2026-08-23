@@ -507,7 +507,7 @@ function seed() {
       ['p004', '签约款', '合同签订后支付', 30, 258, '2026-08-10', null, '', 'planned', '[]'],
       ['p006', '终验款', '已全部回款', 100, 620, '2026-08-01', '2026-08-05', 'INV-2026-003', 'received', '[]']
     ];
-    for (const r of rows) ins.run(...r);
+    for (const r of rows) { try { ins.run(...r); } catch (e) { /* 项目可能被删除，跳过 */ } }
   }
 
   const fundOutCount = db.prepare('SELECT COUNT(*) AS c FROM fund_out').get().c;
@@ -519,15 +519,15 @@ function seed() {
       ['p001', null, '进度款', '按里程碑支付', 40, 800, '2026-12-31', null, '', 'planned', '[]'],
       ['p001', null, '尾款', '验收后支付', 30, 600, '2027-04-30', null, '', 'planned', '[]']
     ];
-    for (const r of rows) ins.run(...r);
+    for (const r of rows) { try { ins.run(...r); } catch (e) { /* 项目可能被删除，跳过 */ } }
   }
 
   const subCount = db.prepare('SELECT COUNT(*) AS c FROM sub_contracts').get().c;
   if (subCount === 0) {
     const ins = db.prepare('INSERT INTO sub_contracts(project_id,name,supplier,signable,signed,paid) VALUES(?,?,?,?,?,?)');
-    ins.run('p001', '主集成商合同', 'XX科技股份', 2000, 1500, 1000);
-    ins.run('p001', '设备供应合同', 'XX设备制造', 1200, 800, 500);
-    ins.run('p002', '数据平台采购', 'XX软件', 1000, 600, 400);
+    try { ins.run('p001', '主集成商合同', 'XX科技股份', 2000, 1500, 1000); } catch (e) {}
+    try { ins.run('p001', '设备供应合同', 'XX设备制造', 1200, 800, 500); } catch (e) {}
+    try { ins.run('p002', '数据平台采购', 'XX软件', 1000, 600, 400); } catch (e) {}
   }
 
   const ruleCount = db.prepare('SELECT COUNT(*) AS c FROM remind_rules').get().c;

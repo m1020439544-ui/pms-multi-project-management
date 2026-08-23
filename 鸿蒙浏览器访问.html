@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>智项目 · 鸿蒙浏览器访问入口</title>
+  <style>
+    :root{--bg:#F7F8FA;--card:#fff;--border:#E3E5EA;--primary:#4E5BF0;--green:#30A46C;--red:#E5484D;--text:#1A1D23;--muted:#5A5F6A}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",sans-serif;background:radial-gradient(900px 500px at 80% -10%,rgba(78,91,240,.16),transparent 60%),var(--bg);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;color:var(--text)}
+    .card{width:min(640px,100%);background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 10px 40px rgba(16,24,40,.08);padding:28px}
+    h1{margin:0 0 8px;font-size:22px}
+    p{color:var(--muted);font-size:14px;line-height:1.7}
+    .steps{background:#F7F8FA;border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:14px 0;font-size:13px}
+    .steps div{padding:4px 0}
+    .steps b{color:var(--primary)}
+    .row{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+    input{flex:1;min-width:220px;height:42px;border:1px solid var(--border);border-radius:8px;padding:0 12px;font-size:14px}
+    button{height:42px;padding:0 20px;border:none;border-radius:8px;background:var(--primary);color:#fff;font-size:14px;font-weight:600;cursor:pointer}
+    button.ghost{background:#fff;border:1px solid var(--border);color:var(--text)}
+    .status{padding:12px 14px;border-radius:8px;font-size:13px;margin-top:8px}
+    .ok{background:#E6F4ED;color:var(--green)}
+    .fail{background:#FDEBEB;color:var(--red)}
+    .note{font-size:12px;color:var(--muted);margin-top:12px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>智项目 · 鸿蒙浏览器访问入口</h1>
+    <p>鸿蒙 7 PC 基于 OpenHarmony 内核，无法直接运行 Node.js 服务端。请先在一台 <b>Windows（x64/ARM）、Linux 或 macOS 电脑</b>上启动服务端，再在鸿蒙 PC 上用浏览器访问。</p>
+    <div class="steps">
+      <div><b>1.</b> 在另一台电脑上运行交付包：Windows 双击 <b>启动界面.bat</b>，Linux 运行 <b>./一键启动.sh</b></div>
+      <div><b>2.</b> 查看启动界面上显示的「局域网访问」地址（例如 http://192.168.1.10:3000）</div>
+      <div><b>3.</b> 在下方填入该地址，检测连通后一键打开系统</div>
+    </div>
+    <div class="row">
+      <input id="server" placeholder="http://192.168.1.10:3000" value="">
+      <button onclick="check()">检测连接</button>
+      <button class="ghost" onclick="openSys()">打开系统</button>
+    </div>
+    <div id="status" class="status" style="display:none"></div>
+    <div class="note">说明：鸿蒙 PC 若提供 Linux 容器/开发者模式，可直接运行交付包内的 启动界面.sh / 一键启动.sh；否则请使用上述浏览器访问方式。</div>
+  </div>
+  <script>
+    const inp = document.getElementById('server');
+    const saved = localStorage.getItem('pms_server') || 'http://localhost:3000';
+    inp.value = saved;
+    async function check(){
+      const base = inp.value.trim().replace(/\/+$/, '');
+      localStorage.setItem('pms_server', base);
+      const box = document.getElementById('status');
+      box.style.display = 'block';
+      box.className = 'status fail';
+      box.textContent = '检测中…';
+      try{
+        const res = await fetch(base + '/api/health', { mode: 'cors' });
+        const data = await res.json();
+        box.className = 'status ok';
+        box.textContent = '连接成功：' + data.name + ' V' + data.version + '（' + data.time + '）';
+      }catch(e){
+        box.className = 'status fail';
+        box.textContent = '无法连接：请确认服务器地址/端口正确、服务已启动，且鸿蒙 PC 与服务器在同一网络。';
+      }
+    }
+    function openSys(){
+      const base = inp.value.trim().replace(/\/+$/, '');
+      localStorage.setItem('pms_server', base);
+      location.href = base;
+    }
+  </script>
+</body>
+</html>

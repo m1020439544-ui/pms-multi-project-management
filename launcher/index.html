@@ -36,7 +36,7 @@
     <div class="row">
       <div>
         <h1>智项目 · 多项目管理系统</h1>
-        <div class="sub">V1.0.1 启动管理界面 · 一键安装 / 启动 / 停止 / 打开 / 查看日志</div>
+        <div class="sub">启动管理界面 · 一键安装 / 启动 / 停止 / 打开 / 查看日志</div>
       </div>
       <span id="statusBadge" class="badge off"><span class="dot"></span><span id="statusText">检测中…</span></span>
     </div>
@@ -77,7 +77,8 @@
           '<span>启动界面端口：<b>' + d.launcherPort + '</b></span>' +
           '<span>PID：<b>' + (d.pid || '—') + '</b></span>' +
           '<span>版本：<b>' + d.version + '</b></span>' +
-          '<span>运行环境：<b>' + d.platform + '</b> Node ' + d.nodeVersion + '</span>';
+          '<span>运行环境：<b>' + d.platform + '</b> Node ' + d.nodeVersion + '</span>' +
+          (d.lanIps && d.lanIps.length ? '<span>局域网访问：<b>' + d.lanIps.map(ip => 'http://' + ip + ':' + d.pmsPort).join('、') + '</b></span>' : '');
       }catch(e){}
     }
     async function refreshLog(){

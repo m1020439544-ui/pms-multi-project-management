@@ -1383,9 +1383,27 @@
   // ---------------- contract management ----------------
   async function renderContracts() {
     const tab = window._contractTab || 'all';
-    const [contracts, plans] = await Promise.all([api('/api/contracts'), api('/api/contracts/plans')]);
+    const projects = await api('/api/projects');
+    if (!window._contractProjectId) {
+      window._contractProjectId = currentProjectId || 'all';
+    }
+    const pid = window._contractProjectId;
+    const qs = pid && pid !== 'all' ? '?projectId=' + encodeURIComponent(pid) : '';
+    const [contracts, plans] = await Promise.all([api('/api/contracts' + qs), api('/api/contracts/plans' + qs)]);
+    const selectedProject = projects.find((p) => p.id === pid);
     appShell(`
-      ${viewTitle('合同管理', '前向 / 后向合同统一台账，付款计划与资金台账联动', canWrite('contract') ? `<button class="btn primary" data-action="new-back-contract">${svg('plus')} 新增后向合同</button>` : '')}
+      ${viewTitle('合同管理', '按项目分类查看单项目合同视图，付款计划与资金台账联动', canWrite('contract') ? `<button class="btn primary" data-action="new-back-contract">${svg('plus')} 新增后向合同</button>` : '')}
+      <div class="card card-pad mb16">
+        <div class="row" style="flex-wrap:wrap">
+          <label style="font-weight:600;flex:none">项目分类：</label>
+          <select class="input" id="contract-project" style="width:280px">
+            <option value="all" ${pid==='all'?'selected':''}>全部项目</option>
+            ${projects.map(p=>`<option value="${esc(p.id)}" ${pid===p.id?'selected':''}>${esc(p.name)}（${esc(p.project_no||p.id)}）</option>`).join('')}
+          </select>
+          <span class="tag primary">${pid==='all' ? '全部项目视图' : '单项目视图'}</span>
+          ${selectedProject ? `<span class="muted small">${esc(selectedProject.name)} · ${esc(selectedProject.customer_name||selectedProject.unit||'')}</span>` : ''}
+        </div>
+      </div>
       <div class="tabs">
         ${[['all','全部合同'],['forward','前向合同'],['backward','后向合同'],['plans','付款计划']].map(([k,label])=>`<button class="tab ${tab===k?'active':''}" data-action="contract-tab" data-tab="${k}">${label}</button>`).join('')}
       </div>
@@ -1419,10 +1437,11 @@
 
   async function handleNewBackContract() {
     const projects = await api('/api/projects');
+    const selected = (window._contractProjectId && window._contractProjectId !== 'all') ? window._contractProjectId : (currentProjectId || (projects[0] && projects[0].id));
     openModal('新增后向合同', `
       <form data-submit="save-back-contract">
         <div class="form-grid">
-          <div class="field"><label>关联项目 *</label><select class="input" name="project_id">${projects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></div>
+          <div class="field"><label>关联项目 *</label><select class="input" name="project_id">${projects.map(p=>`<option value="${esc(p.id)}" ${selected===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
           <div class="field"><label>合同编码</label><input class="input" name="code"></div>
           <div class="field full"><label>合同名称 *</label><input class="input" name="name"></div>
           <div class="field"><label>后向单位名称</label><input class="input" name="supplier"></div>
@@ -2433,6 +2452,10 @@
   });
 
   document.addEventListener('change', (e) => {
+    if (e.target.matches('#contract-project')) {
+      window._contractProjectId = e.target.value;
+      return renderContracts();
+    }
     if (e.target.matches('#menu-import-file') && e.target.files && e.target.files[0]) {
       return handleMenuImport(e.target.files[0]);
     }

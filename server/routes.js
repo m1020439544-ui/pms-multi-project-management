@@ -566,8 +566,16 @@ function registerRoutes(app, upload) {
   // ---------------- contract management ----------------
   app.get('/api/contracts', requireAuth, (req, res) => {
     const direction = req.query.direction || '';
-    const forward = db.prepare(`SELECT id, name, project_no, customer_name, unit, forward_contract_code, forward_contract_name,
-      forward_contract_amount, forward_sign_date, stage, risk FROM projects`).all()
+    const projectId = req.query.projectId || '';
+    let forward;
+    if (projectId) {
+      forward = db.prepare(`SELECT id, name, project_no, customer_name, unit, forward_contract_code, forward_contract_name,
+        forward_contract_amount, forward_sign_date, stage, risk FROM projects WHERE id = ?`).all(projectId);
+    } else {
+      forward = db.prepare(`SELECT id, name, project_no, customer_name, unit, forward_contract_code, forward_contract_name,
+        forward_contract_amount, forward_sign_date, stage, risk FROM projects`).all();
+    }
+    const mapped = forward
       .map((p) => ({
         id: `f-${p.id}`,
         direction: 'forward',
@@ -581,7 +589,9 @@ function registerRoutes(app, upload) {
         stage: p.stage,
         risk: p.risk
       }));
-    const backward = db.prepare(`SELECT s.*, p.name AS project_name FROM sub_contracts s LEFT JOIN projects p ON p.id = s.project_id ORDER BY s.id`).all()
+    const backward = (projectId
+      ? db.prepare(`SELECT s.*, p.name AS project_name FROM sub_contracts s LEFT JOIN projects p ON p.id = s.project_id WHERE s.project_id = ? ORDER BY s.id`).all(projectId)
+      : db.prepare(`SELECT s.*, p.name AS project_name FROM sub_contracts s LEFT JOIN projects p ON p.id = s.project_id ORDER BY s.id`).all())
       .map((c) => ({
         id: `b-${c.id}`,
         direction: 'backward',
@@ -598,16 +608,21 @@ function registerRoutes(app, upload) {
         risk: '',
         rawId: c.id
       }));
-    let list = [...forward, ...backward];
-    if (direction === 'forward') list = forward;
+    let list = [...mapped, ...backward];
+    if (direction === 'forward') list = mapped;
     if (direction === 'backward') list = backward;
     res.json(list);
   });
 
   app.get('/api/contracts/plans', requireAuth, (req, res) => {
-    const inRows = db.prepare(`SELECT f.*, p.name AS project_name FROM fund_in f LEFT JOIN projects p ON p.id = f.project_id ORDER BY f.plan_date, f.id`).all()
+    const projectId = req.query.projectId || '';
+    const inRows = (projectId
+      ? db.prepare(`SELECT f.*, p.name AS project_name FROM fund_in f LEFT JOIN projects p ON p.id = f.project_id WHERE f.project_id = ? ORDER BY f.plan_date, f.id`).all(projectId)
+      : db.prepare(`SELECT f.*, p.name AS project_name FROM fund_in f LEFT JOIN projects p ON p.id = f.project_id ORDER BY f.plan_date, f.id`).all())
       .map((f) => ({ ...deriveFund(f), direction: 'forward', contract: '前向回款' }));
-    const outRows = db.prepare(`SELECT f.*, p.name AS project_name FROM fund_out f LEFT JOIN projects p ON p.id = f.project_id ORDER BY f.plan_date, f.id`).all()
+    const outRows = (projectId
+      ? db.prepare(`SELECT f.*, p.name AS project_name FROM fund_out f LEFT JOIN projects p ON p.id = f.project_id WHERE f.project_id = ? ORDER BY f.plan_date, f.id`).all(projectId)
+      : db.prepare(`SELECT f.*, p.name AS project_name FROM fund_out f LEFT JOIN projects p ON p.id = f.project_id ORDER BY f.plan_date, f.id`).all())
       .map((f) => ({ ...deriveFund(f), direction: 'backward', contract: '后向支付' }));
     res.json([...inRows, ...outRows]);
   });

@@ -25,18 +25,18 @@ function getSessionUser(req) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return null;
-  const session = db.prepare(`SELECT s.*, u.username, u.name, u.role
+  const session = db.prepare(`SELECT s.*, u.username, u.name, u.role, u.permissions
     FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`).get(token);
   if (!session) return null;
   if (new Date(session.expires_at).getTime() < Date.now()) {
     db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
     return null;
   }
-  return { id: session.user_id, username: session.username, name: session.name, role: session.role };
+  return { id: session.user_id, username: session.username, name: session.name, role: session.role, permissions: session.permissions || '{}' };
 }
 
 function publicUser(user) {
-  return { id: user.id, username: user.username, name: user.name, role: user.role };
+  return { id: user.id, username: user.username, name: user.name, role: user.role, permissions: user.permissions || '{}' };
 }
 
 function requireAuth(req, res, next) {
@@ -58,6 +58,25 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function userCanWrite(user, module) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  let perms = {};
+  try { perms = JSON.parse(user.permissions || '{}'); } catch (e) { perms = {}; }
+  const p = perms['*'] || perms[module];
+  return !!(p && p.write);
+}
+
+function requireWrite(module) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: '未登录或会话已过期，请重新登录' });
+    if (!userCanWrite(req.user, module)) {
+      return res.status(403).json({ error: '当前用户没有该模块的编辑权限' });
+    }
+    next();
+  };
+}
+
 function logout(token) {
   db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }
@@ -68,4 +87,4 @@ function fmt(d) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-module.exports = { login, getSessionUser, requireAuth, requireAdmin, logout, fmt };
+module.exports = { login, getSessionUser, requireAuth, requireAdmin, requireWrite, userCanWrite, logout, fmt };

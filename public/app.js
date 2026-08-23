@@ -71,6 +71,14 @@
 
   function isAdmin() { return me && me.role === 'admin'; }
 
+  function canWrite(module) {
+    if (!me) return false;
+    if (me.role === 'admin') return true;
+    let perms = {};
+    try { perms = JSON.parse(me.permissions || '{}'); } catch (e) { perms = {}; }
+    return !!(perms['*'] && perms['*'].write) || !!(perms[module] && perms[module].write);
+  }
+
   function riskInfo(risk) {
     const map = {
       red: { txt: '高风险', cls: 'red' },
@@ -455,9 +463,13 @@
   // ---------------- projects ----------------
   async function renderProjects() {
     const projects = await api('/api/projects');
+    const viewState = await api('/api/settings/project-view').catch(() => ({ view: 'card' }));
+    window._projectView = viewState.view === 'table' ? 'table' : 'card';
     appShell(`
-      ${viewTitle('项目选择', '项目全生命周期管理，点击“选为当前项目”进入工作区', isAdmin() ? `<button class="btn primary" data-action="new-project">${svg('plus')} 新建项目</button>` : '')}
-      <div class="project-grid">
+      ${viewTitle('项目选择', '项目全生命周期管理，点击“选为当前项目”进入工作区', `
+        <button class="btn" data-action="toggle-project-view" title="切换显示方式">${window._projectView === 'table' ? svg('check') + ' 卡片视图' : svg('doc') + ' 表格视图'}</button>
+        ${canWrite('project') ? `<button class="btn primary" data-action="new-project">${svg('plus')} 新建项目</button>` : ''}`)}
+      ${window._projectView === 'table' ? projectTableHtml(projects) : `<div class="project-grid">
         ${projects.map((p) => {
           const r = riskInfo(p.risk);
           return `<div class="card project-card">
@@ -465,7 +477,7 @@
               <div class="name">${esc(p.name)}</div>
               <span class="tag ${r.cls}">${r.txt}</span>
             </div>
-            <div class="meta">${esc(p.unit || '')} · ${esc(p.type || '')}</div>
+            <div class="meta">${esc(p.customer_name || p.unit || '')} · ${esc(p.type || '')}</div>
             <div class="meta"><span class="tag primary">${esc(stageInfo(p.stage))}</span><span class="muted">PM：${esc(p.pm || '')}</span></div>
             <div class="stats">
               <div>合同额<b class="amount">${num(p.amount)}</b>万</div>
@@ -474,30 +486,48 @@
             <div class="muted small">${esc(p.remark || '')}</div>
             <div class="row mt8">
               <button class="btn primary sm" data-action="select-project" data-id="${esc(p.id)}">选为当前项目</button>
-              ${isAdmin() ? `${iconBtn('edit-project:' + esc(p.id), 'edit', '编辑')}${iconBtn('delete-project:' + esc(p.id), 'trash', '删除', 'danger')}` : ''}
+              ${canWrite('project') ? `${iconBtn('edit-project:' + esc(p.id), 'edit', '编辑')}${iconBtn('delete-project:' + esc(p.id), 'trash', '删除', 'danger')}` : ''}
             </div>
           </div>`;
         }).join('')}
-      </div>`);
+      </div>`}`);
+  }
+
+  function projectTableHtml(projects) {
+    return `<div class="card table-wrap"><table class="table">
+      <thead><tr><th>项目编号</th><th>项目名称</th><th>客户名称</th><th class="num">合同额(万)</th><th class="num">回款率</th><th>阶段</th><th>风险</th><th>截止日期</th><th>操作</th></tr></thead>
+      <tbody>${projects.map((p) => {
+        const r = riskInfo(p.risk);
+        return `<tr>
+          <td class="muted">${esc(p.project_no || p.id)}</td>
+          <td><b>${esc(p.name)}</b></td>
+          <td>${esc(p.customer_name || p.unit || '')}</td>
+          <td class="num amount">${num(p.amount)}</td>
+          <td class="num">${num(p.paymentRatio)}%</td>
+          <td><span class="tag primary">${esc(stageInfo(p.stage))}</span></td>
+          <td><span class="tag ${r.cls}">${r.txt}</span></td>
+          <td class="muted">${esc(p.deadline || '')}</td>
+          <td class="actions">
+            <button class="btn sm primary" data-action="select-project" data-id="${esc(p.id)}">选为当前项目</button>
+            ${canWrite('project') ? `${iconBtn('edit-project:' + esc(p.id), 'edit', '编辑')}${iconBtn('delete-project:' + esc(p.id), 'trash', '删除', 'danger')}` : ''}
+          </td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
+  }
+
+  async function toggleProjectView() {
+    const next = window._projectView === 'table' ? 'card' : 'table';
+    try {
+      await api('/api/settings/project-view', { method: 'PUT', body: JSON.stringify({ view: next }) });
+      toast('项目显示方式已切换');
+      await renderProjects();
+    } catch (e) { toast(e.message, true); }
   }
 
   async function handleNewProject() {
-    openModal('新建项目', `
-      <form data-submit="save-project" id="project-form">
-        <div class="form-grid">
-          <div class="field full"><label>项目名称 *</label><input class="input" name="name"></div>
-          <div class="field"><label>对方单位</label><input class="input" name="unit"></div>
-          <div class="field"><label>项目类型</label><input class="input" name="type"></div>
-          <div class="field"><label>合同金额(万元)</label><input class="input" type="number" step="0.01" name="amount" value="0"></div>
-          <div class="field"><label>已支付(万元)</label><input class="input" type="number" step="0.01" name="paid" value="0"></div>
-          <div class="field"><label>阶段</label><select class="input" name="stage"><option>启动</option><option>实施</option><option>收尾</option></select></div>
-          <div class="field"><label>风险</label><select class="input" name="risk"><option value="green">正常</option><option value="yellow">关注</option><option value="red">高风险</option></select></div>
-          <div class="field"><label>签约日期</label><input class="input" type="date" name="sign_date"></div>
-          <div class="field"><label>截止日期</label><input class="input" type="date" name="deadline"></div>
-          <div class="field"><label>项目经理</label><input class="input" name="pm" value="陈志远"></div>
-          <div class="field full"><label>备注</label><textarea class="input" name="remark"></textarea></div>
-        </div>
-      </form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-project-btn' }]));
+    openModal('新建项目', projectFormHtml(null),
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-project-btn' }]));
   }
 
   async function saveProject(form) {
@@ -513,22 +543,47 @@
   async function handleEditProject(id) {
     let p;
     try { p = await api('/api/projects/' + id); } catch (e) { return toast(e.message, true); }
-    openModal('编辑项目', `
-      <form data-submit="update-project" data-id="${esc(id)}">
+    openModal('编辑项目', projectFormHtml(p, id),
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-project-btn' }]));
+  }
+
+  function projectFormHtml(p, id) {
+    const v = p || {};
+    const val = (key, fallback = '') => esc(v[key] === undefined || v[key] === null ? fallback : v[key]);
+    return `
+      <form data-submit="${id ? 'update-project' : 'save-project'}" ${id ? `data-id="${esc(id)}"` : ''}>
         <div class="form-grid">
-          <div class="field full"><label>项目名称 *</label><input class="input" name="name" value="${esc(p.name)}"></div>
-          <div class="field"><label>对方单位</label><input class="input" name="unit" value="${esc(p.unit || '')}"></div>
-          <div class="field"><label>项目类型</label><input class="input" name="type" value="${esc(p.type || '')}"></div>
-          <div class="field"><label>合同金额(万元)</label><input class="input" type="number" step="0.01" name="amount" value="${p.amount}"></div>
-          <div class="field"><label>已支付(万元)</label><input class="input" type="number" step="0.01" name="paid" value="${p.paid}"></div>
-          <div class="field"><label>阶段</label><select class="input" name="stage">${['启动','实施','收尾'].map(s=>`<option ${s===p.stage?'selected':''}>${s}</option>`).join('')}</select></div>
-          <div class="field"><label>风险</label><select class="input" name="risk">${['green','yellow','red'].map(r=>`<option value="${r}" ${r===p.risk?'selected':''}>${riskInfo(r).txt}</option>`).join('')}</select></div>
-          <div class="field"><label>签约日期</label><input class="input" type="date" name="sign_date" value="${esc(p.sign_date || '')}"></div>
-          <div class="field"><label>截止日期</label><input class="input" type="date" name="deadline" value="${esc(p.deadline || '')}"></div>
-          <div class="field"><label>项目经理</label><input class="input" name="pm" value="${esc(p.pm || '')}"></div>
-          <div class="field full"><label>备注</label><textarea class="input" name="remark">${esc(p.remark || '')}</textarea></div>
+          <div class="field"><label>项目名称 *</label><input class="input" name="name" value="${val('name')}"></div>
+          <div class="field"><label>项目编号</label><input class="input" name="project_no" value="${val('project_no')}"></div>
+          <div class="field"><label>集团商机编码</label><input class="input" name="group_opportunity_code" value="${val('group_opportunity_code')}"></div>
+          <div class="field"><label>立项完成时间</label><input class="input" type="date" name="approval_complete_date" value="${val('approval_complete_date')}"></div>
+          <div class="field"><label>项目金额(万) *</label><input class="input" type="number" step="0.01" name="amount" value="${val('amount', 0)}"></div>
+          <div class="field"><label>已支付(万)</label><input class="input" type="number" step="0.01" name="paid" value="${val('paid', 0)}"></div>
+          <div class="field"><label>开工时间</label><input class="input" type="date" name="start_date" value="${val('start_date')}"></div>
+          <div class="field"><label>预计终验时间</label><input class="input" type="date" name="expected_acceptance_date" value="${val('expected_acceptance_date')}"></div>
+          <div class="field"><label>签约归档时间</label><input class="input" type="date" name="sign_archive_date" value="${val('sign_archive_date')}"></div>
+          <div class="field"><label>我方单位</label><input class="input" name="our_unit" value="${val('our_unit')}"></div>
+          <div class="field"><label>客户名称</label><input class="input" name="customer_name" value="${val('customer_name', v.unit || '')}"></div>
+          <div class="field"><label>项目类型</label><input class="input" name="type" value="${val('type')}"></div>
+          <div class="field"><label>签约日期</label><input class="input" type="date" name="sign_date" value="${val('sign_date')}"></div>
+          <div class="field"><label>截止日期</label><input class="input" type="date" name="deadline" value="${val('deadline')}"></div>
+          <div class="field"><label>阶段</label><select class="input" name="stage">${['启动','实施','收尾'].map(s=>`<option ${s===v.stage?'selected':''}>${s}</option>`).join('')}</select></div>
+          <div class="field"><label>风险</label><select class="input" name="risk">${['green','yellow','red'].map(r=>`<option value="${r}" ${r===v.risk?'selected':''}>${riskInfo(r).txt}</option>`).join('')}</select></div>
+          <div class="field"><label>项目经理</label><input class="input" name="pm" value="${val('pm', '陈志远')}"></div>
+          <div class="field full"><label>备注</label><textarea class="input" name="remark">${val('remark')}</textarea></div>
+          <div class="field full"><h3 style="margin:8px 0 4px;font-size:14px">前向合同信息</h3></div>
+          <div class="field"><label>前向合同编码</label><input class="input" name="forward_contract_code" value="${val('forward_contract_code')}"></div>
+          <div class="field"><label>前向合同名称</label><input class="input" name="forward_contract_name" value="${val('forward_contract_name')}"></div>
+          <div class="field"><label>前向签约金额(万)</label><input class="input" type="number" step="0.01" name="forward_contract_amount" value="${val('forward_contract_amount', 0)}"></div>
+          <div class="field"><label>前向签约时间</label><input class="input" type="date" name="forward_sign_date" value="${val('forward_sign_date')}"></div>
+          <div class="field full"><h3 style="margin:8px 0 4px;font-size:14px">后向合同信息</h3></div>
+          <div class="field"><label>后向合同编码</label><input class="input" name="backward_contract_code" value="${val('backward_contract_code')}"></div>
+          <div class="field"><label>后向合同名称</label><input class="input" name="backward_contract_name" value="${val('backward_contract_name')}"></div>
+          <div class="field"><label>后向单位名称</label><input class="input" name="backward_unit_name" value="${val('backward_unit_name')}"></div>
+          <div class="field"><label>后向签约金额(万)</label><input class="input" type="number" step="0.01" name="backward_contract_amount" value="${val('backward_contract_amount', 0)}"></div>
+          <div class="field"><label>后向签约时间</label><input class="input" type="date" name="backward_sign_date" value="${val('backward_sign_date')}"></div>
         </div>
-      </form>`, modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-project-btn' }]));
+      </form>`;
   }
 
   async function updateProject(form, id) {
@@ -615,28 +670,52 @@
   }
 
   function detailInfoHtml(p) {
+    const row = (label, value) => `<div class="row" style="justify-content:space-between;padding:7px 0;border-bottom:1px solid #F0F1F4">
+      <span class="muted" style="flex:none">${esc(label)}</span><span style="text-align:right;font-weight:500">${value === undefined || value === '' || value === null ? '—' : esc(value)}</span></div>`;
+    const card = (title, body) => `<div class="card card-pad"><h3 style="margin:0 0 8px;font-size:15px">${esc(title)}</h3>${body}</div>`;
     return `<div class="grid" style="grid-template-columns:1fr 1fr">
-      <div class="card card-pad">
-        <h3 style="margin:0 0 12px;font-size:15px">基本信息</h3>
-        <div class="form-grid" style="grid-template-columns:1fr">
-          <div class="row"><span class="muted" style="width:90px">项目名称</span><b>${esc(p.name)}</b></div>
-          <div class="row"><span class="muted" style="width:90px">对方单位</span>${esc(p.unit || '—')}</div>
-          <div class="row"><span class="muted" style="width:90px">项目类型</span>${esc(p.type || '—')}</div>
-          <div class="row"><span class="muted" style="width:90px">项目经理</span>${esc(p.pm || '—')}</div>
-          <div class="row"><span class="muted" style="width:90px">签约日期</span>${esc(p.sign_date || '—')}</div>
-          <div class="row"><span class="muted" style="width:90px">截止日期</span>${esc(p.deadline || '—')}</div>
-          <div class="row"><span class="muted" style="width:90px">备注</span>${esc(p.remark || '—')}</div>
-        </div>
-        ${isAdmin() ? `<div class="row mt16"><button class="btn" data-action="edit-project-detail" data-id="${esc(p.id)}">编辑信息</button></div>` : ''}
+      <div style="display:flex;flex-direction:column;gap:16px">
+        ${card('基本信息', `
+          ${row('项目名称', p.name)}
+          ${row('项目编号', p.project_no || p.id)}
+          ${row('集团商机编码', p.group_opportunity_code)}
+          ${row('项目金额(万)', num(p.amount))}
+          ${row('我方单位', p.our_unit)}
+          ${row('客户名称', p.customer_name || p.unit)}
+          ${row('项目经理', p.pm)}
+          ${row('项目类型', p.type)}
+          ${row('备注', p.remark)}
+        `)}
+        ${card('里程碑与归档', `
+          ${row('立项完成时间', p.approval_complete_date)}
+          ${row('开工时间', p.start_date)}
+          ${row('预计终验时间', p.expected_acceptance_date)}
+          ${row('签约归档时间', p.sign_archive_date)}
+          ${row('签约日期', p.sign_date)}
+          ${row('截止日期', p.deadline)}
+        `)}
       </div>
-      <div class="card card-pad">
-        <h3 style="margin:0 0 12px;font-size:15px">金额概览</h3>
-        <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:flex;flex-direction:column;gap:16px">
+        ${card('前向合同信息', `
+          ${row('前向合同编码', p.forward_contract_code)}
+          ${row('前向合同名称', p.forward_contract_name)}
+          ${row('前向签约金额(万)', p.forward_contract_amount ? num(p.forward_contract_amount) : '')}
+          ${row('前向签约时间', p.forward_sign_date)}
+        `)}
+        ${card('后向合同信息', `
+          ${row('后向合同编码', p.backward_contract_code)}
+          ${row('后向合同名称', p.backward_contract_name)}
+          ${row('后向单位名称', p.backward_unit_name)}
+          ${row('后向签约金额(万)', p.backward_contract_amount ? num(p.backward_contract_amount) : '')}
+          ${row('后向签约时间', p.backward_sign_date)}
+        `)}
+        ${card('金额概览', `<div class="grid" style="grid-template-columns:1fr 1fr;gap:12px">
           ${statCard('合同金额', num(p.amount), '万', '含税')}
           ${statCard('已支付', num(p.paid), '万', '回款率 ' + num(p.paymentRatio) + '%')}
           ${statCard('未支付', num(p.unpaid), '万', '待跟踪')}
           ${statCard('风险等级', riskInfo(p.risk).txt, '', '')}
-        </div>
+        </div>`)}
+        ${canWrite('project') ? `<div class="row"><button class="btn" data-action="edit-project-detail" data-id="${esc(p.id)}">编辑信息</button></div>` : ''}
       </div>
     </div>`;
   }
@@ -661,14 +740,14 @@
       </div>
       <div class="card card-pad mt16">
         <div class="space-between mb16"><h3 style="margin:0;font-size:15px">后向合同</h3>
-          ${isAdmin() ? `<button class="btn sm primary" data-action="new-contract" data-id="${esc(project.id)}">${svg('plus')} 新增合同</button>` : ''}</div>
+          ${canWrite('fund') ? `<button class="btn sm primary" data-action="new-contract" data-id="${esc(project.id)}">${svg('plus')} 新增合同</button>` : ''}</div>
         <div class="table-wrap"><table class="table">
-          <thead><tr><th>合同名称</th><th>供应商</th><th class="num">可签约</th><th class="num">已签约</th><th class="num">已支付</th><th class="num">剩余未签约</th><th class="num">已签约未支付</th>${isAdmin()?'<th></th>':''}</tr></thead>
+          <thead><tr><th>合同名称</th><th>供应商</th><th class="num">可签约</th><th class="num">已签约</th><th class="num">已支付</th><th class="num">剩余未签约</th><th class="num">已签约未支付</th>${canWrite('fund')?'<th></th>':''}</tr></thead>
           <tbody>${data.contracts.map((c) => `
             <tr><td>${esc(c.name)}</td><td>${esc(c.supplier || '')}</td>
             <td class="num">${num(c.signable)}</td><td class="num">${num(c.signed)}</td><td class="num">${num(c.paid)}</td>
             <td class="num amount">${num(c.signable - c.signed)}</td><td class="num">${num(c.signed - c.paid)}</td>
-            ${isAdmin() ? `<td class="actions">${iconBtn('edit-contract:' + c.id, 'edit', '编辑')}${iconBtn('delete-contract:' + c.id, 'trash', '删除', 'danger')}</td>` : ''}
+            ${canWrite('fund') ? `<td class="actions">${iconBtn('edit-contract:' + c.id, 'edit', '编辑')}${iconBtn('delete-contract:' + c.id, 'trash', '删除', 'danger')}</td>` : ''}
             </tr>`).join('')}</tbody>
         </table></div>
       </div>`;
@@ -677,15 +756,15 @@
   function fundTable(title, type, projectId, rows) {
     return `<div class="card card-pad">
       <div class="space-between mb16"><h3 style="margin:0;font-size:15px">${esc(title)}</h3>
-        ${isAdmin() ? `<button class="btn sm primary" data-action="new-fund" data-type="${type}" data-id="${esc(projectId)}">${svg('plus')} 新增条款</button>` : ''}</div>
+        ${canWrite('fund') ? `<button class="btn sm primary" data-action="new-fund" data-type="${type}" data-id="${esc(projectId)}">${svg('plus')} 新增条款</button>` : ''}</div>
       <div class="table-wrap"><table class="table">
-        <thead><tr><th>款项名称</th><th>触发条件</th><th class="num">应收/应付</th><th>应收/付日期</th><th>实收/付日期</th><th>发票号</th><th>状态</th>${isAdmin()?'<th></th>':''}</tr></thead>
+        <thead><tr><th>款项名称</th><th>触发条件</th><th class="num">应收/应付</th><th>应收/付日期</th><th>实收/付日期</th><th>发票号</th><th>状态</th>${canWrite('fund')?'<th></th>':''}</tr></thead>
         <tbody>${rows.map((r) => {
           const st = statusInfo(r.status);
           return `<tr><td>${esc(r.name)}</td><td class="muted">${esc(r.cond || '')}</td>
           <td class="num amount">${num(r.amount)}</td><td>${esc(r.plan_date || '')}</td><td>${esc(r.recv_date || '')}</td><td>${esc(r.invoice || '')}</td>
           <td><span class="tag ${st.cls}">${st.txt}</span></td>
-          ${isAdmin() ? `<td class="actions"><button class="btn sm" data-action="edit-fund:${type}:${r.id}" data-pid="${esc(projectId)}" title="编辑">${svg('edit')}</button><button class="btn sm danger" data-action="delete-fund:${type}:${r.id}" data-pid="${esc(projectId)}" title="删除">${svg('trash')}</button></td>` : ''}
+          ${canWrite('fund') ? `<td class="actions"><button class="btn sm" data-action="edit-fund:${type}:${r.id}" data-pid="${esc(projectId)}" title="编辑">${svg('edit')}</button><button class="btn sm danger" data-action="delete-fund:${type}:${r.id}" data-pid="${esc(projectId)}" title="删除">${svg('trash')}</button></td>` : ''}
           </tr>`;
         }).join('')}</tbody>
       </table></div>
@@ -834,12 +913,12 @@
     return `<div class="grid" style="grid-template-columns:280px 1fr">
       <div class="card card-pad">
         <div class="space-between mb16"><h3 style="margin:0;font-size:15px">文档目录</h3>
-          ${isAdmin() ? `<button class="btn sm" data-action="new-folder" data-id="${esc(project.id)}">${svg('plus')}</button>` : ''}</div>
+          ${canWrite('doc') ? `<button class="btn sm" data-action="new-folder" data-id="${esc(project.id)}">${svg('plus')}</button>` : ''}</div>
         <div class="tree" id="folder-tree"></div>
       </div>
       <div class="card card-pad">
         <div class="space-between mb16"><h3 style="margin:0;font-size:15px" id="doc-panel-title">文档列表</h3>
-          ${isAdmin() ? `<button class="btn sm primary" data-action="new-docfile">${svg('plus')} 上传/新建</button>` : ''}</div>
+          ${canWrite('doc') ? `<button class="btn sm primary" data-action="new-docfile">${svg('plus')} 上传/新建</button>` : ''}</div>
         <div id="doc-files"></div>
       </div>
     </div>`;
@@ -868,7 +947,7 @@
         <div class="node ${window._activeFolder === f.id ? 'active' : ''}" data-action="select-folder" data-id="${f.id}" style="padding-left:${8 + depth * 14}px">
           ${svg('folder')} <span class="flex1" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(f.name)}</span>
           <span class="row-actions">
-            ${isAdmin() ? `${iconBtn('edit-folder:' + f.id, 'edit', '重命名')}${iconBtn('delete-folder:' + f.id, 'trash', '删除', 'danger')}` : ''}
+            ${canWrite('doc') ? `${iconBtn('edit-folder:' + f.id, 'edit', '重命名')}${iconBtn('delete-folder:' + f.id, 'trash', '删除', 'danger')}` : ''}
           </span>
         </div>
         ${f.children && f.children.length ? `<div class="children">${folderTreeHtml(f.children, depth + 1)}</div>` : ''}
@@ -901,12 +980,12 @@
   function docFilesHtml(files) {
     if (!files.length) return '<div class="empty">该目录暂无文档</div>';
     return `<div class="table-wrap"><table class="table">
-      <thead><tr><th>文件名</th><th>类型</th><th class="num">大小</th><th>上传时间</th><th>备注</th>${isAdmin()?'<th></th>':''}</tr></thead>
+      <thead><tr><th>文件名</th><th>类型</th><th class="num">大小</th><th>上传时间</th><th>备注</th>${canWrite('doc')?'<th></th>':''}</tr></thead>
       <tbody>${files.map((f) => `
         <tr><td>${esc(f.name)} ${f.path ? `<a href="javascript:;" class="small" data-action="download" data-url="/api/doc-files/${f.id}/download" data-name="${esc(f.name)}">下载</a>` : ''}</td>
         <td>${esc(f.type || '')}</td><td class="num">${f.size ? (f.size > 1024 ? (f.size/1024).toFixed(1)+' KB' : f.size+' B') : ''}</td>
         <td>${esc(f.upload_time || '')}</td><td>${esc(f.note || '')}</td>
-        ${isAdmin() ? `<td class="actions">${iconBtn('edit-docfile:' + f.id, 'edit', '编辑')}${iconBtn('delete-docfile:' + f.id, 'trash', '删除', 'danger')}</td>` : ''}
+        ${canWrite('doc') ? `<td class="actions">${iconBtn('edit-docfile:' + f.id, 'edit', '编辑')}${iconBtn('delete-docfile:' + f.id, 'trash', '删除', 'danger')}</td>` : ''}
         </tr>`).join('')}</tbody>
     </table></div>`;
   }
@@ -1187,7 +1266,7 @@
           <div class="field full"><label>备注</label><div>${esc(d.remark || '')}</div></div>
         </div>
         <div class="ai-disclaimer">${esc(res.disclaimer || 'AI 识别仅供参考')}</div>
-        ${isAdmin() ? `<button class="btn primary mt16" data-action="create-from-ai">用抽取结果新建项目</button>` : ''}`;
+        ${canWrite('project') ? `<button class="btn primary mt16" data-action="create-from-ai">用抽取结果新建项目</button>` : ''}`;
       window._extractData = d;
     } catch (e) { toast(e.message, true); }
     btn.disabled = false; btn.textContent = 'AI 抽取字段';
@@ -1226,12 +1305,12 @@
       <div class="grid" style="grid-template-columns:280px 1fr">
         <div class="card card-pad">
           <div class="space-between mb16"><h3 style="margin:0;font-size:15px">文档目录</h3>
-            ${isAdmin() ? `<button class="btn sm" data-action="new-folder" data-id="${esc(project.id)}">${svg('plus')}</button>` : ''}</div>
+            ${canWrite('doc') ? `<button class="btn sm" data-action="new-folder" data-id="${esc(project.id)}">${svg('plus')}</button>` : ''}</div>
           <div class="tree" id="folder-tree"></div>
         </div>
         <div class="card card-pad">
           <div class="space-between mb16"><h3 style="margin:0;font-size:15px" id="doc-panel-title">文档列表</h3>
-            ${isAdmin() ? `<button class="btn sm primary" data-action="new-docfile">${svg('plus')} 上传/新建</button>` : ''}</div>
+            ${canWrite('doc') ? `<button class="btn sm primary" data-action="new-docfile">${svg('plus')} 上传/新建</button>` : ''}</div>
           <div id="doc-files"></div>
         </div>
       </div>
@@ -1290,7 +1369,7 @@
           <tbody>${rules.map(r=>`
             <tr><td>${esc(r.name)}</td><td class="muted">${esc(r.trigger_desc || '')}</td>
             <td>${(r.channels||[]).map(c=>`<span class="tag gray">${esc(c)}</span>`).join(' ')}</td>
-            <td>${isAdmin() ? `<label class="switch"><input type="checkbox" data-rule="${r.id}" ${r.enabled?'checked':''}><span class="slider"></span></label>` : `<span class="tag ${r.enabled?'green':'gray'}">${r.enabled?'启用':'停用'}</span>`}</td></tr>`).join('')}
+            <td>${canWrite('remind') ? `<label class="switch"><input type="checkbox" data-rule="${r.id}" ${r.enabled?'checked':''}><span class="slider"></span></label>` : `<span class="tag ${r.enabled?'green':'gray'}">${r.enabled?'启用':'停用'}</span>`}</td></tr>`).join('')}
           </tbody>
         </table></div>
       </div>`);
@@ -1310,7 +1389,7 @@
       api('/api/ai/models'), api('/api/ai/capabilities'), api('/api/ai/stats'), api('/api/ai/logs')
     ]);
     appShell(`
-      ${viewTitle('AI 配置', '3 家模型接入卡 + 5 能力独立指定模型 + 用量统计与调用日志', isAdmin() ? `<button class="btn primary" data-action="new-ai-model">${svg('plus')} 新增模型</button>` : '')}
+      ${viewTitle('AI 配置', '3 家模型接入卡 + 5 能力独立指定模型 + 用量统计与调用日志', canWrite('ai') ? `<button class="btn primary" data-action="new-ai-model">${svg('plus')} 新增模型</button>` : '')}
       <div class="grid mb16" style="grid-template-columns:repeat(3,1fr)">
         ${models.map(m=>`
           <div class="card card-pad">
@@ -1319,7 +1398,7 @@
             <div class="small muted">模型：${esc(m.model || '未设置')}</div>
             <div class="small muted" style="word-break:break-all">endpoint：${esc(m.endpoint || '未设置')}</div>
             <div class="row mt16">${m.enabled?'<span class="tag green">已启用</span>':'<span class="tag gray">已停用</span>'}
-              ${isAdmin() ? `${iconBtn('edit-ai-model:' + m.id, 'edit', '编辑')}${iconBtn('delete-ai-model:' + m.id, 'trash', '删除', 'danger')}` : ''}</div>
+              ${canWrite('ai') ? `${iconBtn('edit-ai-model:' + m.id, 'edit', '编辑')}${iconBtn('delete-ai-model:' + m.id, 'trash', '删除', 'danger')}` : ''}</div>
           </div>`).join('')}
       </div>
       <div class="card card-pad mb16">
@@ -1328,8 +1407,8 @@
           <thead><tr><th>能力</th><th>指定模型</th><th>状态</th></tr></thead>
           <tbody>${caps.map(c=>`
             <tr><td><b>${esc(c.name)}</b><div class="small muted">${esc(c.cap_key)}</div></td>
-            <td>${isAdmin() ? `<select class="input" data-cap="${c.id}" style="width:auto;height:32px">${models.map(m=>`<option value="${m.id}" ${c.model_id===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select>` : esc((models.find(m=>m.id===c.model_id)||{}).name || '—')}</td>
-            <td>${isAdmin() ? `<label class="switch"><input type="checkbox" data-cap-enabled="${c.id}" ${c.enabled?'checked':''}><span class="slider"></span></label>` : `<span class="tag ${c.enabled?'green':'gray'}">${c.enabled?'启用':'停用'}</span>`}</td></tr>`).join('')}
+            <td>${canWrite('ai') ? `<select class="input" data-cap="${c.id}" style="width:auto;height:32px">${models.map(m=>`<option value="${m.id}" ${c.model_id===m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select>` : esc((models.find(m=>m.id===c.model_id)||{}).name || '—')}</td>
+            <td>${canWrite('ai') ? `<label class="switch"><input type="checkbox" data-cap-enabled="${c.id}" ${c.enabled?'checked':''}><span class="slider"></span></label>` : `<span class="tag ${c.enabled?'green':'gray'}">${c.enabled?'启用':'停用'}</span>`}</td></tr>`).join('')}
           </tbody>
         </table></div>
       </div>
@@ -1434,23 +1513,54 @@
   // ---------------- settings ----------------
   async function renderSettings() {
     const items = await api('/api/menu/items');
+    let users = [];
+    if (isAdmin()) {
+      try { users = await api('/api/users'); } catch (e) { users = []; }
+    }
     appShell(`
-      ${viewTitle('系统设置', '全局菜单自定义：主/子菜单增删改与显隐，保存后全站生效', isAdmin() ? `<button class="btn primary" data-action="new-menu-item">${svg('plus')} 新增菜单</button>` : '')}
+      ${viewTitle('系统设置', '全局菜单自定义：主/子菜单增删改与显隐，支持导出/导入显示配置', `
+        <button class="btn" data-action="export-menu">${svg('doc')} 导出菜单</button>
+        <button class="btn" data-action="menu-template">${svg('doc')} 下载模板</button>
+        ${canWrite('menu') ? `<button class="btn" data-action="import-menu">${svg('plus')} 导入菜单</button>` : ''}
+        ${canWrite('menu') ? `<button class="btn primary" data-action="new-menu-item">${svg('plus')} 新增菜单</button>` : ''}`)}
+      <input type="file" id="menu-import-file" accept="application/json,.json" style="display:none">
       <div class="card card-pad">
         <div class="table-wrap"><table class="table">
-          <thead><tr><th>排序</th><th>菜单名称</th><th>显示名</th><th>链接</th><th>备注</th><th>可见</th>${isAdmin()?'<th></th>':''}</tr></thead>
+          <thead><tr><th>排序</th><th>菜单名称</th><th>显示名</th><th>链接</th><th>备注</th><th>可见</th>${canWrite('menu')?'<th></th>':''}</tr></thead>
           <tbody>${items.map(m=>`
             <tr>
               <td>${m.sort_order}</td>
               <td>${m.parent_id ? '<span style="margin-left:14px">↳ </span>' : ''}${esc(m.name)}</td>
               <td>${esc(m.display)}</td><td class="small">${esc(m.href)}</td><td class="muted">${esc(m.remark || '')}</td>
               <td><span class="tag ${m.visible?'green':'gray'}">${m.visible?'显示':'隐藏'}</span></td>
-              ${isAdmin() ? `<td class="actions">${iconBtn('edit-menu-item:' + m.id, 'edit', '编辑')}${iconBtn('delete-menu-item:' + m.id, 'trash', '删除', 'danger')}</td>` : ''}
+              ${canWrite('menu') ? `<td class="actions">${iconBtn('edit-menu-item:' + m.id, 'edit', '编辑')}${iconBtn('delete-menu-item:' + m.id, 'trash', '删除', 'danger')}</td>` : ''}
             </tr>`).join('')}
           </tbody>
         </table></div>
       </div>
+      ${isAdmin() ? `
+      <div class="card card-pad mt16">
+        <div class="space-between mb16"><h3 style="margin:0;font-size:15px">用户与权限配置</h3>
+          <button class="btn primary sm" data-action="new-user">${svg('plus')} 新增用户</button></div>
+        <div class="table-wrap"><table class="table">
+          <thead><tr><th>用户名</th><th>姓名</th><th>角色</th><th>可编辑模块</th><th>创建时间</th><th></th></tr></thead>
+          <tbody>${users.map(u=>`
+            <tr><td>${esc(u.username)}</td><td>${esc(u.name)}</td>
+              <td><span class="tag ${u.role==='admin'?'primary':'gray'}">${u.role==='admin'?'管理员':'只读'}</span></td>
+              <td>${permSummary(u.permissions)}</td><td class="small muted">${esc(u.created_at || '')}</td>
+              <td class="actions">${iconBtn('edit-user:' + u.id, 'edit', '编辑')}${iconBtn('delete-user:' + u.id, 'trash', '删除', 'danger')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>` : ''}
       <div class="small muted mt16">修改菜单后请刷新页面，导航将按配置动态渲染（含子菜单下拉）。</div>`);
+  }
+
+  function permSummary(permissions) {
+    const map = { project: '项目', fund: '资金', doc: '文档', remind: '提醒', ai: 'AI', menu: '菜单' };
+    const keys = Object.keys(permissions || {}).filter((k) => permissions[k] && permissions[k].write);
+    if (!keys.length) return '<span class="muted">无</span>';
+    return keys.map((k) => `<span class="tag green">${esc(map[k] || k)}</span>`).join(' ');
   }
 
   async function handleNewMenuItem() {
@@ -1525,6 +1635,138 @@
     } catch (e) { toast(e.message, true); }
   }
 
+  function userFormHtml(u) {
+    const v = u || {};
+    const perms = v.permissions || {};
+    const modules = [
+      ['project', '项目管理'],
+      ['fund', '资金台账'],
+      ['doc', '文档管理'],
+      ['remind', '提醒管理'],
+      ['ai', 'AI 配置'],
+      ['menu', '菜单/系统设置']
+    ];
+    return `
+      <form data-submit="${u ? 'update-user' : 'save-user'}" ${u ? `data-id="${esc(u.id)}"` : ''}>
+        <div class="form-grid">
+          <div class="field"><label>用户名 *</label><input class="input" name="username" value="${esc(v.username || '')}" ${u ? 'disabled' : ''}></div>
+          <div class="field"><label>姓名 *</label><input class="input" name="name" value="${esc(v.name || '')}"></div>
+          <div class="field"><label>角色</label><select class="input" name="role">
+            <option value="admin" ${v.role==='admin'?'selected':''}>管理员（PMO）</option>
+            <option value="viewer" ${v.role==='viewer'?'selected':''}>只读</option>
+          </select></div>
+          <div class="field"><label>${u ? '重置密码（留空不修改）' : '密码 *'}</label><input class="input" type="password" name="password"></div>
+          <div class="field full"><label style="font-weight:600">模块编辑权限（管理员默认全部）</label>
+            <div class="grid" style="grid-template-columns:repeat(3,1fr);margin-top:8px">
+              ${modules.map(([key,label])=>`
+                <label class="row"><input type="checkbox" name="perm_${key}" ${perms[key] && perms[key].write ? 'checked' : ''}> ${esc(label)}</label>`).join('')}
+            </div>
+          </div>
+        </div>
+      </form>`;
+  }
+
+  function readUserForm(form) {
+    const data = readForm(form);
+    const permissions = {};
+    ['project', 'fund', 'doc', 'remind', 'ai', 'menu'].forEach((key) => {
+      if (data['perm_' + key]) permissions[key] = { write: true };
+    });
+    return { username: data.username, name: data.name, role: data.role, password: data.password || undefined, permissions };
+  }
+
+  function handleNewUser() {
+    openModal('新增用户', userFormHtml(null),
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'save-user-btn' }]));
+  }
+
+  async function saveUser(form) {
+    try {
+      await api('/api/users', { method: 'POST', body: JSON.stringify(readUserForm(form)) });
+      toast('用户已创建');
+      closeModal();
+      await renderSettings();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleEditUser(id) {
+    const users = await api('/api/users');
+    const u = users.find((x) => String(x.id) === String(id));
+    if (!u) return toast('用户不存在', true);
+    openModal('编辑用户', userFormHtml(u),
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '保存', cls: 'primary', action: 'submit-form', id: 'update-user-btn' }]));
+  }
+
+  async function updateUser(form, id) {
+    try {
+      await api('/api/users/' + id, { method: 'PUT', body: JSON.stringify(readUserForm(form)) });
+      toast('用户已更新');
+      closeModal();
+      await renderSettings();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function handleDeleteUser(id) {
+    openModal('删除确认', '<p>确认删除该用户吗？</p>',
+      modalButtons([{ label: '取消', action: 'modal-close' }, { label: '确认删除', cls: 'danger', action: 'confirm-delete-user', id: 'del-user-btn' }]),
+      () => { window._delUserId = id; });
+  }
+
+  async function confirmDeleteUser() {
+    try {
+      await api('/api/users/' + window._delUserId, { method: 'DELETE' });
+      toast('用户已删除');
+      closeModal();
+      await renderSettings();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function exportMenu() {
+    try {
+      const data = await api('/api/menu/export');
+      downloadJson('pms-menu-config.json', data);
+      toast('菜单配置已导出');
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function downloadMenuTemplate() {
+    try {
+      const data = await api('/api/menu/template');
+      downloadJson('pms-menu-template.json', data);
+      toast('模板已下载');
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function importMenu() {
+    const input = document.getElementById('menu-import-file');
+    if (!input) return;
+    input.value = '';
+    input.click();
+  }
+
+  async function handleMenuImport(file) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const res = await api('/api/menu/import', { method: 'POST', body: JSON.stringify(data) });
+      toast('菜单导入成功，共 ' + res.count + ' 项');
+      await loadMenu();
+      await renderSettings();
+    } catch (e) { toast(e.message || '导入失败', true); }
+  }
+
+  function downloadJson(filename, data) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   // ---------------- action / event binding ----------------
   const ACTIONS = {
     logout() {
@@ -1542,6 +1784,7 @@
     },
     'select-project'(el) { handleSelectProject(actionArg(el)); },
     'new-project': handleNewProject,
+    'toggle-project-view': toggleProjectView,
     'edit-project'(el) { handleEditProject(actionArg(el)); },
     'delete-project'(el) { handleDeleteProject(actionArg(el)); },
     'detail-tab'(el) {
@@ -1574,7 +1817,13 @@
     'delete-ai-model'(el) { handleDeleteAiModel(actionArg(el)); },
     'new-menu-item': handleNewMenuItem,
     'edit-menu-item'(el) { handleEditMenuItem(actionArg(el)); },
-    'delete-menu-item'(el) { handleDeleteMenuItem(actionArg(el)); }
+    'delete-menu-item'(el) { handleDeleteMenuItem(actionArg(el)); },
+    'export-menu': exportMenu,
+    'menu-template': downloadMenuTemplate,
+    'import-menu': importMenu,
+    'new-user': handleNewUser,
+    'edit-user'(el) { handleEditUser(actionArg(el)); },
+    'delete-user'(el) { handleDeleteUser(actionArg(el)); }
   };
 
   const SUBMITS = {
@@ -1592,7 +1841,9 @@
     'save-ai-model': saveAiModel,
     'update-ai-model': (form) => updateAiModel(form, form.dataset.id),
     'save-menu-item': saveMenuItem,
-    'update-menu-item': (form) => updateMenuItem(form, form.dataset.id)
+    'update-menu-item': (form) => updateMenuItem(form, form.dataset.id),
+    'save-user': saveUser,
+    'update-user': (form) => updateUser(form, form.dataset.id)
   };
 
   document.addEventListener('click', (e) => {
@@ -1618,6 +1869,9 @@
   });
 
   document.addEventListener('change', (e) => {
+    if (e.target.matches('#menu-import-file') && e.target.files && e.target.files[0]) {
+      return handleMenuImport(e.target.files[0]);
+    }
     if (e.target.matches('input[data-rule]')) return toggleRule(e.target);
     if (e.target.matches('select[data-cap]')) return changeCapModel(e.target);
     if (e.target.matches('input[data-cap-enabled]')) return toggleCap(e.target);

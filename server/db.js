@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'viewer',
+  permissions TEXT NOT NULL DEFAULT '{}',
   password_hash TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -33,7 +34,24 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  project_no TEXT,
+  group_opportunity_code TEXT,
+  approval_complete_date TEXT,
+  start_date TEXT,
+  expected_acceptance_date TEXT,
+  sign_archive_date TEXT,
+  our_unit TEXT,
   unit TEXT,
+  customer_name TEXT,
+  forward_contract_code TEXT,
+  forward_contract_name TEXT,
+  forward_contract_amount REAL NOT NULL DEFAULT 0,
+  forward_sign_date TEXT,
+  backward_contract_code TEXT,
+  backward_contract_name TEXT,
+  backward_unit_name TEXT,
+  backward_contract_amount REAL NOT NULL DEFAULT 0,
+  backward_sign_date TEXT,
   amount REAL NOT NULL DEFAULT 0,
   paid REAL NOT NULL DEFAULT 0,
   risk TEXT NOT NULL DEFAULT 'green',
@@ -202,6 +220,39 @@ CREATE TABLE IF NOT EXISTS app_state (
 );
 `);
 
+function ensureColumns(table, columns) {
+  const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+  for (const [name, ddl] of Object.entries(columns)) {
+    if (!existing.has(name)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    }
+  }
+}
+
+ensureColumns('users', {
+  permissions: "permissions TEXT NOT NULL DEFAULT '{}'"
+});
+
+ensureColumns('projects', {
+  project_no: 'project_no TEXT',
+  group_opportunity_code: 'group_opportunity_code TEXT',
+  approval_complete_date: 'approval_complete_date TEXT',
+  start_date: 'start_date TEXT',
+  expected_acceptance_date: 'expected_acceptance_date TEXT',
+  sign_archive_date: 'sign_archive_date TEXT',
+  our_unit: 'our_unit TEXT',
+  customer_name: 'customer_name TEXT',
+  forward_contract_code: 'forward_contract_code TEXT',
+  forward_contract_name: 'forward_contract_name TEXT',
+  forward_contract_amount: 'forward_contract_amount REAL NOT NULL DEFAULT 0',
+  forward_sign_date: 'forward_sign_date TEXT',
+  backward_contract_code: 'backward_contract_code TEXT',
+  backward_contract_name: 'backward_contract_name TEXT',
+  backward_unit_name: 'backward_unit_name TEXT',
+  backward_contract_amount: 'backward_contract_amount REAL NOT NULL DEFAULT 0',
+  backward_sign_date: 'backward_sign_date TEXT'
+});
+
 // ---------------- encryption helpers ----------------
 const SECRET_PATH = path.join(DATA_DIR, 'secret.key');
 let SECRET_KEY;
@@ -273,6 +324,24 @@ function seed() {
       VALUES(@id,@name,@unit,@amount,@paid,@risk,@stage,@type,@sign_date,@deadline,@pm,@remark)`);
     for (const p of projects) ins.run(p);
   }
+
+  // 为演示项目补充扩展字段（仅当尚未填写时，避免覆盖用户数据）
+  const sampleFields = {
+    p001: ['XM-2026-001', 'SJ-2026-0001', '2026-07-30', '2026-08-10', '2027-03-31', '2027-04-15', '江苏智联科技有限公司', 'XX市大数据局', 'FW-2026-001', '智慧园区智能化改造项目合同', 3200, '2026-08-05', 'HW-2026-001', '主集成实施合同', 'XX科技股份', 2000, '2026-08-06'],
+    p002: ['XM-2026-002', 'SJ-2026-0002', '2026-06-10', '2026-06-25', '2027-02-28', '2027-03-15', '江苏智联科技有限公司', '省通信管理局', 'FW-2026-002', '数据中台建设项目合同', 2400, '2026-06-20', 'HW-2026-002', '数据平台采购合同', 'XX软件', 1000, '2026-06-22'],
+    p003: ['XM-2026-003', 'SJ-2026-0003', '2026-07-05', '2026-07-20', '2027-05-31', '2027-06-15', '江苏智联科技有限公司', '市移动分公司', 'FW-2026-003', '5G 核心网扩容项目合同', 4800, '2026-07-15', 'HW-2026-003', '核心网设备采购合同', 'XX设备制造', 3600, '2026-07-18'],
+    p004: ['XM-2026-004', 'SJ-2026-0004', '2026-07-25', '2026-08-05', '2027-01-31', '2027-02-15', '江苏智联科技有限公司', '省电信公司', 'FW-2026-004', 'AI 客服系统项目合同', 860, '2026-08-01', 'HW-2026-004', 'AI 模型供应合同', 'XX人工智能', 500, '2026-08-03'],
+    p005: ['XM-2026-005', 'SJ-2026-0005', '2026-07-20', '2026-08-01', '2027-04-30', '2027-05-15', '江苏智联科技有限公司', '市政务服务局', 'FW-2026-005', '智能运维平台项目合同', 1500, '2026-07-28', 'HW-2026-005', '运维平台实施合同', 'XX信息', 900, '2026-07-30'],
+    p006: ['XM-2026-006', 'SJ-2026-0006', '2026-02-01', '2026-02-15', '2026-09-30', '2026-10-10', '江苏智联科技有限公司', '市公安局科信处', 'FW-2026-006', 'BSS 计费升级项目合同', 620, '2026-02-10', 'HW-2026-006', '计费系统实施合同', 'XX软件', 400, '2026-02-12'],
+    p007: ['XM-2026-007', 'SJ-2026-0007', '2026-01-05', '2026-01-20', '2026-08-31', '2026-09-10', '江苏智联科技有限公司', '市联通分公司', 'FW-2026-007', '网络切片管理项目合同', 420, '2026-01-15', 'HW-2026-007', '网络切片平台采购合同', 'XX网络', 300, '2026-01-18'],
+    p008: ['XM-2026-008', 'SJ-2026-0008', '2026-07-10', '2026-07-25', '2027-06-30', '2027-07-15', '江苏智联科技有限公司', '区行政审批局', 'FW-2026-008', '边缘计算节点部署项目合同', 1000, '2026-07-20', 'HW-2026-008', '边缘计算实施合同', 'XX云计算', 700, '2026-07-22']
+  };
+  const upd = db.prepare(`UPDATE projects SET
+    project_no=?, group_opportunity_code=?, approval_complete_date=?, start_date=?, expected_acceptance_date=?, sign_archive_date=?,
+    our_unit=?, customer_name=?, forward_contract_code=?, forward_contract_name=?, forward_contract_amount=?, forward_sign_date=?,
+    backward_contract_code=?, backward_contract_name=?, backward_unit_name=?, backward_contract_amount=?, backward_sign_date=?
+    WHERE id=? AND project_no IS NULL`);
+  for (const [id, f] of Object.entries(sampleFields)) upd.run(...f, id);
 
   const fundInCount = db.prepare('SELECT COUNT(*) AS c FROM fund_in').get().c;
   if (fundInCount === 0) {

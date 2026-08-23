@@ -1,0 +1,19 @@
+{
+  "name": "pms",
+  "version": "1.0.0",
+  "private": true,
+  "description": "智项目 · 多项目管理系统",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "docx": "^9.7.1",
+    "express": "^4.19.2",
+    "multer": "^2.0.2"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.8.0"
+  }
+}

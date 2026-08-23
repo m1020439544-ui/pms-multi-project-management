@@ -1,0 +1,21 @@
+const puppeteer = require('puppeteer-core');
+const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const BASE = 'http://localhost:3000';
+(async () => {
+  const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox'] });
+  const page = await browser.newPage();
+  page.on('console', m => console.log('CONSOLE', m.type(), m.text()));
+  page.on('pageerror', e => console.log('PAGEERROR', e.message));
+  page.on('requestfailed', r => console.log('REQFAIL', r.url(), r.failure()?.errorText));
+  page.on('response', r => { if (r.url().includes('/api/')) console.log('RESP', r.status(), r.url()); });
+  await page.goto(BASE, { waitUntil: 'networkidle0' });
+  console.log('hash', await page.evaluate(() => location.hash));
+  await page.type('input[name="username"]', 'pmo');
+  await page.type('input[name="password"]', 'pmo2026');
+  await page.click('button[type="submit"]');
+  await new Promise(r => setTimeout(r, 2500));
+  console.log('hash after', await page.evaluate(() => location.hash));
+  console.log('body snippet', await page.evaluate(() => document.body.innerText.slice(0, 300)));
+  await page.screenshot({ path: 'screenshots/debug-login.png' });
+  await browser.close();
+})();

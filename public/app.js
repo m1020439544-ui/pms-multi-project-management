@@ -1464,7 +1464,7 @@
     const [contracts, plans] = await Promise.all([api('/api/contracts' + qs), api('/api/contracts/plans' + qs)]);
     const selectedProject = projects.find((p) => p.id === pid);
     appShell(`
-      ${viewTitle('合同管理', '按项目分类查看单项目合同视图，付款计划与资金台账联动', canWrite('contract') ? `<button class="btn primary" data-action="new-back-contract">${svg('plus')} 新增后向合同</button>` : '')}
+      ${viewTitle('合同管理', '按项目分类查看单项目合同视图，付款计划与资金台账联动', canWrite('contract') ? `<button class="btn" data-action="import-contract">${svg('doc')} 导入合同</button><button class="btn primary" data-action="new-back-contract">${svg('plus')} 新增后向合同</button>` : '')}
       <div class="card card-pad mb16">
         <div class="row" style="flex-wrap:wrap">
           <label style="font-weight:600;flex:none">项目分类：</label>
@@ -1622,6 +1622,54 @@
       modalButtons([{ label: '关闭', action: 'modal-close' }]));
     window._contractFilesKey = { direction, id };
     await loadContractFilesModal(direction, id);
+  }
+
+  async function handleImportContract() {
+    const projects = await api('/api/projects');
+    const defaultPid = (window._contractProjectId && window._contractProjectId !== 'all') ? window._contractProjectId : (currentProjectId || (projects[0] && projects[0].id));
+    openModal('导入合同（自动分析生成）', `
+      <p class="small muted mb16">选择项目与模板类型，上传前向/后向合同模板文件（xlsx）或合同文本（PDF/Word/文本），系统将自动分析并生成合同内容与重要条款。</p>
+      <div class="form-grid">
+        <div class="field"><label>关联项目 *</label><select class="input" id="import-contract-project">${projects.map(p=>`<option value="${esc(p.id)}" ${defaultPid===p.id?'selected':''}>${esc(p.name)}（${esc(p.project_no||p.id)}）</option>`).join('')}</select></div>
+        <div class="field"><label>合同类型 *</label><select class="input" id="import-contract-direction"><option value="forward">前向合同</option><option value="backward">后向合同</option></select></div>
+      </div>
+      <div class="row mt16">
+        <button class="btn sm" data-action="download" data-url="/api/contracts/import-template?direction=forward" data-name="contract-import-template-forward.xlsx">下载前向模板</button>
+        <button class="btn sm" data-action="download" data-url="/api/contracts/import-template?direction=backward" data-name="contract-import-template-backward.xlsx">下载后向模板</button>
+      </div>
+      <div class="field mt16"><label>上传合同文件（xlsx / pdf / docx / txt）*</label><input class="input" type="file" id="contract-import-file" accept=".xlsx,.pdf,.docx,.txt"></div>
+      <div id="contract-import-result" class="mt16"></div>`,
+      modalButtons([{ label: '关闭', action: 'modal-close' }]));
+  }
+
+  async function doContractImport(file) {
+    const projectId = document.getElementById('import-contract-project').value;
+    const direction = document.getElementById('import-contract-direction').value;
+    const box = document.getElementById('contract-import-result');
+    if (box) box.innerHTML = '<div class="muted">正在导入并自动分析…</div>';
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('project_id', projectId);
+    fd.append('direction', direction);
+    try {
+      const res = await fetch('/api/contracts/import', { method: 'POST', headers: { 'Authorization': 'Bearer ' + localStorage.getItem(LS_TOKEN) }, body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '导入失败');
+      const label = direction === 'forward' ? '前向合同' : '后向合同';
+      box.innerHTML = `
+        <div class="row"><span class="tag green">${esc(label)}已生成</span>${data.fields && data.fields.code ? `<span class="tag gray">${esc(data.fields.code)}</span>` : ''}</div>
+        <div class="small mt8">合同名称：${esc((data.fields && data.fields.name) || '')} · 金额：${num((data.fields && data.fields.amount) || 0)} 万</div>
+        ${data.analysis ? `<div class="mt8"><b>${esc(data.analysis.title || '合同重要条款分析')}</b>
+          <div class="small muted">风险：${data.analysis.risk_level === 'red' ? '高风险' : data.analysis.risk_level === 'yellow' ? '关注' : '正常'} · 生成 ${(data.analysis.clauses || []).length} 条重要条款</div>
+          ${(data.analysis.clauses || []).map(c=>`<div class="small mt8" style="padding-left:8px;border-left:2px solid var(--primary-subtle)"><span class="tag primary">${esc(c.category||'条款')}</span> ${esc(c.content||'')}</div>`).join('')}
+        </div>` : '<div class="small muted mt8">该文件类型已完成结构化导入（xlsx），未进行文本条款分析。</div>'}
+        <div class="ai-disclaimer">导入内容由 AI 自动识别生成，请人工复核后使用。</div>`;
+      toast('合同导入完成');
+      await renderContracts();
+    } catch (e) {
+      if (box) box.innerHTML = `<div class="small" style="color:var(--risk-red)">${esc(e.message)}</div>`;
+      toast(e.message, true);
+    }
   }
 
   async function loadContractFilesModal(direction, id) {
@@ -2770,6 +2818,7 @@
     'ai-doc-template'(el) { handleAiDocTemplate(el.dataset.tpl); },
     'download'(el) { handleDownload(el); },
     'contract-tab'(el) { window._contractTab = el.dataset.tab; renderContracts(); },
+    'import-contract': handleImportContract,
     'new-back-contract': handleNewBackContract,
     'edit-back-contract'(el) { handleEditBackContract(actionArg(el)); },
     'delete-back-contract'(el) { handleDeleteBackContract(actionArg(el)); },
@@ -2893,6 +2942,9 @@
   });
 
   document.addEventListener('change', (e) => {
+    if (e.target.matches('#contract-import-file') && e.target.files && e.target.files[0]) {
+      return doContractImport(e.target.files[0]);
+    }
     if (e.target.matches('#contract-file-input') && e.target.files && e.target.files[0]) {
       return uploadContractFile(e.target);
     }

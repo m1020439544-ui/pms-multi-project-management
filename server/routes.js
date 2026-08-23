@@ -769,6 +769,99 @@ function registerRoutes(app, upload) {
     res.json({ ...saved, clauses: safeJson(saved.clauses, []) });
   });
 
+  // ---------------- contract import (template -> auto analyze -> generate) ----------------
+  function localContractFields(text, fileName, direction) {
+    const s = String(text || '');
+    const pick = (re) => { const m = s.match(re); return m ? m[1].trim() : ''; };
+    const code = pick(/合同编号[:：]?\s*([A-Za-z0-9_\-/]+)/) || pick(/([A-Za-z0-9_\-]{4,})号?合同/);
+    const amount = (() => { const m = s.match(/(?:金额|合同额|总价)[^0-9]{0,10}([0-9]+(?:\.[0-9]+)?)\s*(?:万元|万|元)/); return m ? Number(m[1]) : 0; })();
+    const partner = direction === 'backward'
+      ? (pick(/乙方[:：]\s*([^\n，。；;]{2,40})/) || pick(/供应商[:：]\s*([^\n，。；;]{2,40})/))
+      : (pick(/甲方[:：]\s*([^\n，。；;乙]{2,40})/) || pick(/客户[:：]\s*([^\n，。；;]{2,40})/));
+    const name = pick(/合同名称[:：]\s*([^\n，。；;甲乙]{2,40})/) || (fileName || '').replace(/\.(pdf|docx?|txt)$/i, '');
+    return { code, name, partner, amount, sign_date: today(), remark: '由导入文件自动识别生成，请人工复核' };
+  }
+
+  app.get('/api/contracts/import-template', requireAuth, async (req, res) => {
+    const direction = req.query.direction === 'backward' ? 'backward' : 'forward';
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(direction === 'forward' ? '前向合同导入模板' : '后向合同导入模板');
+    ws.columns = [
+      { header: '关联项目编号', key: 'project_no', width: 16 },
+      { header: '合同编码', key: 'code', width: 16 },
+      { header: '合同名称', key: 'name', width: 28 },
+      { header: direction === 'forward' ? '客户名称' : '后向单位名称', key: 'partner', width: 22 },
+      { header: '签约金额(万元)', key: 'amount', width: 14 },
+      { header: '签约时间', key: 'sign_date', width: 14 },
+      { header: '备注', key: 'remark', width: 24 }
+    ];
+    ws.addRow({ project_no: 'XM-2026-001', code: direction === 'forward' ? 'FW-2026-001' : 'HW-2026-001', name: direction === 'forward' ? '前向合同示例' : '后向合同示例', partner: direction === 'forward' ? '示例客户' : '示例供应商', amount: 100, sign_date: '2026-08-01', remark: '示例行，导入时请删除' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="contract-import-template-${direction}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  });
+
+  app.post('/api/contracts/import', requireAuth, requireWrite('contract'), upload.single('file'), async (req, res) => {
+    const b = req.body || {};
+    const direction = b.direction === 'backward' ? 'backward' : 'forward';
+    const projectId = b.project_id;
+    if (!projectId || !db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) return sendError(res, 404, '请选择有效的项目');
+    if (!req.file) return sendError(res, 400, '请选择导入文件');
+    const original = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+    const ext = (path.extname(req.file.originalname) || '').replace('.', '').toLowerCase();
+
+    let fields;
+    let text = '';
+    if (ext === 'xlsx') {
+      const wb = new ExcelJS.Workbook();
+      try {
+        await wb.xlsx.readFile(req.file.path);
+        const ws = wb.worksheets[0];
+        const row = ws.getRow(2);
+        const g = (i) => { const v = row.getCell(i).value; return v == null ? '' : String(v).trim(); };
+        fields = { code: g(2), name: g(3), partner: g(4), amount: Number(g(5) || 0), sign_date: cellToDate(g(6)), remark: g(7) };
+      } catch (e) {
+        return sendError(res, 400, 'Excel 解析失败');
+      }
+      text = `${fields.name} ${fields.code} ${fields.partner} ${fields.amount}`;
+    } else {
+      const tmpFile = { path: req.file.filename, file_type: ext };
+      text = await extractContractText(tmpFile);
+      if (!text) text = `文件名：${original}`;
+      fields = localContractFields(text, original, direction);
+    }
+
+    let contract;
+    if (direction === 'forward') {
+      db.prepare(`UPDATE projects SET forward_contract_code=?, forward_contract_name=?, customer_name=?, forward_contract_amount=?, forward_sign_date=?, updated_at=? WHERE id=?`)
+        .run(fields.code || (db.prepare('SELECT project_no FROM projects WHERE id=?').get(projectId)?.project_no || ''), fields.name || '前向合同', fields.partner || null, Number(fields.amount || 0), fields.sign_date || null, now(), projectId);
+      contract = { direction, id: projectId };
+    } else {
+      const r = db.prepare(`INSERT INTO sub_contracts(project_id,code,name,supplier,signable,signed,paid,sign_date,created_at,updated_at)
+        VALUES(?,?,?,?,?,0,0,?,?,?)`)
+        .run(projectId, fields.code || '', fields.name || '后向合同', fields.partner || '', Number(fields.amount || 0), fields.sign_date || null, now(), now());
+      contract = { direction, id: String(Number(r.lastInsertRowid)) };
+    }
+
+    const fr = db.prepare(`INSERT INTO contract_files(direction,contract_id,file_name,file_type,size,path,uploader)
+      VALUES(?,?,?,?,?,?,?)`)
+      .run(direction, contract.id, original, ext, req.file.size, req.file.filename, req.user ? req.user.name : '');
+    logOperation('contract', `contract-${direction}`, contract.id, 'upload', `导入附件：${original}`, req.user ? req.user.name : '');
+
+    let analysis = null;
+    if (['pdf', 'docx', 'txt', 'md'].includes(ext)) {
+      analysis = await ai.analyzeContractClauses(text);
+      const ar = db.prepare(`INSERT INTO contract_analyses(direction,contract_id,file_id,title,summary,risk_level,clauses)
+        VALUES(?,?,?,?,?,?,?)`)
+        .run(direction, contract.id, Number(fr.lastInsertRowid), analysis.title || '合同重要条款分析', analysis.summary || '', analysis.risk_level || 'green', JSON.stringify(analysis.clauses || []));
+      analysis = db.prepare('SELECT * FROM contract_analyses WHERE id = ?').get(Number(ar.lastInsertRowid));
+      logOperation('contract', `contract-${direction}`, contract.id, 'analyze', `AI 分析生成合同条款：${original}`, req.user ? req.user.name : '');
+    }
+    logOperation('contract', `contract-${direction}`, contract.id, 'import', `导入生成${direction === 'forward' ? '前向' : '后向'}合同：${fields.name || original}`, req.user ? req.user.name : '');
+    res.json({ contract, fields, file: db.prepare('SELECT * FROM contract_files WHERE id = ?').get(Number(fr.lastInsertRowid)), analysis: analysis ? { ...analysis, clauses: safeJson(analysis.clauses, []) } : null });
+  });
+
   app.post('/api/contracts/backward', requireAuth, requireWrite('contract'), (req, res) => {
     const b = req.body || {};
     if (!b.name || !b.project_id) return sendError(res, 400, '合同名称和关联项目不能为空');

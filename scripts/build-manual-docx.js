@@ -15,6 +15,8 @@ const lines = [
   ['li', 'Windows（x64 / ARM11）：双击 install.bat 安装依赖，双击 start.bat 启动，浏览器访问 http://localhost:3000。'],
   ['li', 'Linux / macOS / 鸿蒙开发者环境：执行 ./install.sh 与 ./start.sh。'],
   ['li', '局域网访问：放行 3000 端口，其他设备访问 http://<服务器IP>:3000。'],
+  ['li', '一键后台启动：HarmonyOS/Linux 执行 ./一键启动.sh（自动装依赖并后台运行）；Windows 双击 start-bg.bat（隐藏窗口后台运行）。'],
+  ['li', '停止后台服务：Linux 执行 ./stop.sh；Windows 双击 stop.bat。日志位于 data/pms.log。'],
   ['h2', '4. 登录'],
   ['li', '管理员（PMO）：pmo / pmo2026，拥有全部功能。'],
   ['li', '只读用户：viewer / pmo2026，仅可查看。'],

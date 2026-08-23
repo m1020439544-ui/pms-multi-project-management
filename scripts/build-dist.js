@@ -9,7 +9,7 @@ const zip = path.join(root, 'dist', '智项目管理系统-V1.0交付包.zip');
 fs.rmSync(path.join(root, 'dist'), { recursive: true, force: true });
 fs.mkdirSync(dist, { recursive: true });
 
-for (const item of ['server', 'public', 'docs', 'package.json', 'package-lock.json', 'README.md', 'install.bat', 'start.bat', 'install.sh', 'start.sh', 'VERSION', '.gitignore']) {
+for (const item of ['server', 'public', 'docs', 'package.json', 'package-lock.json', 'README.md', 'install.bat', 'start.bat', 'start-bg.bat', 'stop.bat', 'install.sh', 'start.sh', 'start-bg.sh', 'stop.sh', 'status.sh', '一键启动.sh', 'VERSION', '.gitignore']) {
   const src = path.join(root, item);
   if (fs.existsSync(src)) fs.cpSync(src, path.join(dist, item), { recursive: true });
 }
